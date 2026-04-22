@@ -1,0 +1,3 @@
+# This file ensures the terraform directory is tracked by git
+# even when it's empty. Remove this file when you add your first
+# Terraform configuration files.

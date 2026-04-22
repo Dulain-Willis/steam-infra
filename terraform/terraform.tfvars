@@ -1,0 +1,5 @@
+project          = "steamspy"
+environment      = "dev"
+minio_endpoint   = "minio:9000"
+minio_access_key = "minioadmin"
+minio_secret_key = "minioadmin"
