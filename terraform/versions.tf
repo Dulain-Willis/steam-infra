@@ -1,10 +1,16 @@
 terraform {
-  required_version = ">= 1.5.0"
 
   required_providers {
-    minio = {
-      source  = "aminueza/minio"
-      version = ">= 1.7.0"
+    aws = {
+      source  = "hashicorp/aws" 
+      version = "~> 6.0"
     }
   }
+
+  required_verions = "1.15"
 }
+
+provider "aws" {
+  region = "var.region"
+}
+
