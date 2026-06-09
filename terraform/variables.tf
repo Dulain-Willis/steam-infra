@@ -4,10 +4,11 @@ variable "region" {
   default     = "us-east-1"                                                                                                                            
 }                                                                                                                                                      
                 
-variable "control_plane_instance_type"
+variable "control_plane_instance_type" {
   description = "EC2 instance type for Kubernetes control plane"
   type        = string 
   default     = "t2.medium"
+}
 
 variable "worker_instance_type" {                                                                                                                           
   description = "EC2 instance type for Kubernetes worker node"
