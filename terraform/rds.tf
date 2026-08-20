@@ -9,7 +9,7 @@ resource "aws_db_subnet_group" "main" {
 
 resource "aws_security_group" "rds" {
   name        = "steam-infra-rds"
-  description = "Allow Postgres from the bastion only"
+  description = "Allow Postgres from the bastion and generator only"
   vpc_id      = aws_vpc.main.id
 
   egress {
@@ -63,4 +63,14 @@ resource "aws_security_group_rule" "rds_from_bastion" {
   security_group_id        = aws_security_group.rds.id
   source_security_group_id = aws_security_group.bastion.id
   description               = "Postgres from the bastion"
+}
+
+resource "aws_security_group_rule" "rds_from_generator" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.rds.id
+  source_security_group_id = aws_security_group.generator.id
+  description              = "Postgres from the generator"
 }
