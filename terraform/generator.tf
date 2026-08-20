@@ -38,6 +38,10 @@ resource "aws_instance" "generator" {
   iam_instance_profile        = aws_iam_instance_profile.generator.name
   associate_public_ip_address = true
 
+  # ponytail: builds the image on-box from source inlined into user_data
+  # (no registry, no image versioning, full docker build on every boot).
+  # Revisit with an ECR image + pull-on-boot if generator code outgrows
+  # the reboot-to-deploy cycle. See #19.
   user_data = templatefile("${path.module}/generator_user_data.sh.tpl", {
     dockerfile       = file("${path.module}/../generator/Dockerfile")
     requirements     = file("${path.module}/../generator/requirements.txt")
