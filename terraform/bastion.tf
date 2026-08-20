@@ -40,3 +40,26 @@ resource "aws_iam_instance_profile" "bastion" {
   name = "steam-infra-bastion"
   role = aws_iam_role.bastion.name
 }
+
+data "aws_ami" "al2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-arm64"]
+  }
+}
+
+resource "aws_instance" "bastion" {
+  ami                         = data.aws_ami.al2023.id
+  instance_type               = "t4g.nano"
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.bastion.id]
+  iam_instance_profile        = aws_iam_instance_profile.bastion.name
+  associate_public_ip_address = true
+
+  tags = {
+    Name = "steam-infra-bastion"
+  }
+}
