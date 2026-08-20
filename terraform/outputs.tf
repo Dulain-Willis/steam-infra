@@ -2,6 +2,10 @@ output "bastion_instance_id" {
   value = aws_instance.bastion.id
 }
 
+output "generator_instance_id" {
+  value = aws_instance.generator.id
+}
+
 output "rds_endpoint" {
   value = aws_db_instance.main.address
 }
