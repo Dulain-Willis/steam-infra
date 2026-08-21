@@ -2,24 +2,34 @@ import random
 from collections import Counter
 from datetime import datetime, timezone
 
-from generator import EVENT_WEIGHTS, pick_event_type, purchase_tick, tick
+from generator import (
+    concurrent_player_snapshot_tick,
+    pick_event_type,
+    price_change_tick,
+    purchase_tick,
+    tick,
+)
 
 
 class FakeCursor:
-    """Records executed statements/params; returns canned fetchone() values
-    in order. Stands in for psycopg2's cursor so tick logic is testable
-    without a live Postgres connection.
+    """Records executed statements/params; returns canned fetchone()/
+    fetchall() values in order. Stands in for psycopg2's cursor so tick
+    logic is testable without a live Postgres connection.
     """
 
-    def __init__(self, fetchone_values):
+    def __init__(self, fetchone_values=(), fetchall_values=()):
         self.calls = []
         self._fetchone_values = list(fetchone_values)
+        self._fetchall_values = list(fetchall_values)
 
     def execute(self, sql, params=None):
         self.calls.append((sql, params))
 
     def fetchone(self):
         return self._fetchone_values.pop(0)
+
+    def fetchall(self):
+        return self._fetchall_values.pop(0)
 
 
 def fixed_clock():
@@ -29,11 +39,10 @@ def fixed_clock():
 def test_pick_event_type_seeded_rng_matches_expected_distribution():
     rng = random.Random(42)
     picks = [pick_event_type(rng) for _ in range(500)]
-    # Single registered type today, but exercised through the weighted
-    # selector (not a shortcut), so a second entry changes this test's
-    # expectations rather than silently passing.
-    assert set(picks) == {"purchase"}
-    assert Counter(picks)["purchase"] == 500
+    # Exercised through the weighted selector (not a shortcut), so adding
+    # or reweighting an event type changes this test's expectations rather
+    # than silently passing.
+    assert set(picks) == {"purchase", "price_change", "concurrent_player_snapshot"}
 
 
 def test_pick_event_type_respects_weights_with_multiple_types():
@@ -73,8 +82,87 @@ def test_purchase_tick_produces_exactly_one_ownership_grant_for_the_purchase():
 
 
 def test_tick_dispatches_to_the_selected_event_type():
+    # seed 1 lands on "purchase" given today's EVENT_WEIGHTS (see
+    # test_pick_event_type_seeded_rng_matches_expected_distribution for the
+    # full set of registered types).
     cur = FakeCursor(fetchone_values=[("u",), ("g",), ("p",)])
-    event_type = tick(cur, fixed_clock, random.Random(0))
+    event_type = tick(cur, fixed_clock, random.Random(1))
 
     assert event_type == "purchase"
-    assert EVENT_WEIGHTS == [("purchase", 1.0)]
+
+
+def test_price_change_tick_captures_old_and_new_price_cents():
+    price_id = "price-1"
+    game_id = "game-1"
+    cur = FakeCursor(
+        fetchone_values=[(price_id, game_id, "US", "USD", 1999)]
+    )
+
+    # Same seed drives the same rng.uniform(-0.2, 0.2) draw price_change_tick
+    # makes, so the expected delta is reproducible rather than asserted as
+    # "just not equal" (which a 0 delta could pass by accident).
+    expected_delta = int(1999 * random.Random(3).uniform(-0.2, 0.2))
+    expected_new_price_cents = max(99, 1999 + expected_delta)
+
+    result = price_change_tick(cur, fixed_clock, random.Random(3))
+
+    assert result == price_id
+
+    insert_calls = [
+        (sql, params) for sql, params in cur.calls if "insert into price_changes" in sql
+    ]
+    assert len(insert_calls) == 1
+    _, params = insert_calls[0]
+    inserted_game_id, region, currency, old_price_cents, new_price_cents, changed_at = params
+    assert inserted_game_id == game_id
+    assert region == "US"
+    assert currency == "USD"
+    assert old_price_cents == 1999
+    assert new_price_cents == expected_new_price_cents
+    assert changed_at == fixed_clock()
+
+    update_calls = [
+        (sql, params) for sql, params in cur.calls if "update game_prices" in sql
+    ]
+    assert len(update_calls) == 1
+    _, update_params = update_calls[0]
+    assert update_params == (new_price_cents, fixed_clock(), price_id)
+
+
+def test_price_change_tick_floors_new_price_at_99_cents():
+    cur = FakeCursor(fetchone_values=[("price-1", "game-1", "US", "USD", 100)])
+
+    # Worst-case rng.uniform draw (-0.2) would take 100 cents negative
+    # without the floor; a fixed seed doesn't guarantee that draw, so
+    # exercise the floor directly against a low starting price instead.
+    price_change_tick(cur, fixed_clock, random.Random(9))
+
+    insert_sql, insert_params = next(
+        (sql, params) for sql, params in cur.calls if "insert into price_changes" in sql
+    )
+    new_price_cents = insert_params[4]
+    assert new_price_cents >= 99
+
+
+def test_concurrent_player_snapshot_tick_writes_one_row_per_sampled_game():
+    from generator import SNAPSHOT_SAMPLE_SIZE
+
+    game_ids = [f"game-{i}" for i in range(SNAPSHOT_SAMPLE_SIZE)]
+    cur = FakeCursor(fetchall_values=[[(gid,) for gid in game_ids]])
+
+    result = concurrent_player_snapshot_tick(cur, fixed_clock, random.Random(5))
+
+    assert result == game_ids
+
+    insert_calls = [
+        (sql, params)
+        for sql, params in cur.calls
+        if "insert into concurrent_player_snapshots" in sql
+    ]
+    assert len(insert_calls) == SNAPSHOT_SAMPLE_SIZE
+    for (game_id, player_count, snapshot_at), expected_game_id in zip(
+        (params for _, params in insert_calls), game_ids
+    ):
+        assert game_id == expected_game_id
+        assert 0 <= player_count <= 60
+        assert snapshot_at == fixed_clock()
