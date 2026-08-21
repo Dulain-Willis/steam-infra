@@ -5,15 +5,15 @@ executes it, writing rows through the given cursor. Clock and RNG are
 injected — never read from globals — so ticks are forceable and
 unit-testable without a live Postgres connection.
 
-`purchase`, `key_redemption`, and `refund` are single-phase: one call
-writes the event row plus (for purchase/key_redemption) the fan-in
-`ownership_grants` row, or (for refund) revokes an existing one. `gift`
-is two-phase, following the open/close nullable-timestamp pattern used
-elsewhere in the schema: a send half inserts a `gifts` row with
-`redeemed_at` null, and a redeem half — picked probabilistically when an
-unredeemed gift exists — closes it and only then writes the
-`ownership_grants` row (source='gift'), since ownership doesn't change
-hands until redemption.
+`purchase`, `key_redemption`, `refund`, `price_change`, and
+`concurrent_player_snapshot` are single-phase: one call writes the event
+row (plus, for purchase/key_redemption, the fan-in `ownership_grants` row,
+or for refund, revokes an existing one). `gift` is two-phase, following
+the open/close nullable-timestamp pattern used elsewhere in the schema: a
+send half inserts a `gifts` row with `redeemed_at` null, and a redeem half
+— picked probabilistically when an unredeemed gift exists — closes it and
+only then writes the `ownership_grants` row (source='gift'), since
+ownership doesn't change hands until redemption.
 """
 
 import logging
@@ -40,12 +40,15 @@ GIFT_REDEEM_CHANCE = 0.5  # when an unredeemed gift exists, chance a gift tick c
 CHARGEBACK_CHANCE = 0.1
 
 # Weighted event types: (name, weight). Relative weight reflects rarity —
-# refunds are the rarest event.
+# catalog events (price_change, concurrent_player_snapshot) are rarer than
+# per-user purchases, and refund is the rarest event of all.
 EVENT_WEIGHTS = [
     ("purchase", 5.0),
     ("gift", 2.0),
     ("key_redemption", 2.0),
     ("refund", 1.0),
+    ("price_change", 1.0),
+    ("concurrent_player_snapshot", 2.0),
 ]
 
 
@@ -205,11 +208,73 @@ def refund_tick(cur, clock, rng):
     return refund_id
 
 
+def price_change_tick(cur, clock, rng):
+    """Nudges a random seeded game_prices row and writes the price_changes
+    audit row capturing old/new price_cents.
+    """
+    cur.execute(
+        "select id, game_id, region, currency, price_cents "
+        "from game_prices order by random() limit 1"
+    )
+    price_id, game_id, region, currency, old_price_cents = cur.fetchone()
+
+    changed_at = clock()
+    # ponytail: +/-20% random walk, floored at 99c to keep prices at a
+    # plausible minimum (rather than drifting to 0 over many changes);
+    # revisit if #16 wants sale-shaped price curves instead.
+    delta = int(old_price_cents * rng.uniform(-0.2, 0.2))
+    new_price_cents = max(99, old_price_cents + delta)
+
+    cur.execute(
+        "insert into price_changes "
+        "(game_id, region, currency, old_price_cents, new_price_cents, changed_at) "
+        "values (%s, %s, %s, %s, %s, %s)",
+        (game_id, region, currency, old_price_cents, new_price_cents, changed_at),
+    )
+    cur.execute(
+        "update game_prices set price_cents = %s, updated_at = %s where id = %s",
+        (new_price_cents, changed_at, price_id),
+    )
+    return price_id
+
+
+# ponytail: each snapshot tick samples 25 games and gives each a
+# player_count in [0, 60] (avg ~750 summed across the sample), so a
+# "latest snapshot per game" read taken shortly after a burst of
+# concurrent_player_snapshot ticks lands in the ~500-1,000 peak target.
+# A single tick only covers 25 of 3000 games though — sweeping the whole
+# catalog takes ~120 ticks at this sample size, so "instant" is
+# approximate until #16 tunes tick interval/weight for a faster sweep.
+SNAPSHOT_SAMPLE_SIZE = 25
+
+
+def concurrent_player_snapshot_tick(cur, clock, rng):
+    """Writes a concurrent_player_snapshots row for a random sample of
+    games, simulating an instant read of catalog-wide concurrency.
+    """
+    snapshot_at = clock()
+    cur.execute(
+        "select id from games order by random() limit %s", (SNAPSHOT_SAMPLE_SIZE,)
+    )
+    game_ids = [row[0] for row in cur.fetchall()]
+
+    for game_id in game_ids:
+        player_count = rng.randint(0, 60)
+        cur.execute(
+            "insert into concurrent_player_snapshots "
+            "(game_id, player_count, snapshot_at) values (%s, %s, %s)",
+            (game_id, player_count, snapshot_at),
+        )
+    return game_ids
+
+
 EVENT_HANDLERS = {
     "purchase": purchase_tick,
     "gift": gift_tick,
     "key_redemption": key_redemption_tick,
     "refund": refund_tick,
+    "price_change": price_change_tick,
+    "concurrent_player_snapshot": concurrent_player_snapshot_tick,
 }
 
 

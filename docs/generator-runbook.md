@@ -14,6 +14,10 @@ types, all feeding the same `ownership_grants` fan-in:
 - `refund` — writes a `refunds` row against an existing purchase and sets
   `revoked_at` on the matching `ownership_grants` row (never deletes or
   duplicates it).
+- `price_change` — nudges a random seeded `game_prices` row and writes the
+  `price_changes` audit row.
+- `concurrent_player_snapshot` — writes a `concurrent_player_snapshots`
+  row for a sampled batch of games.
 
 Start/stop is manual, not scheduled: leave it off between dev sessions to
 keep the environment in the ~$0-3/month band.
