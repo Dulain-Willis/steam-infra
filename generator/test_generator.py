@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from generator import (
     EVENT_HANDLERS,
     EVENT_WEIGHTS,
+    REFUND_REASONS,
     concurrent_player_snapshot_tick,
     family_share_tick,
     gift_redeem_tick,
@@ -294,12 +295,13 @@ def test_concurrent_player_snapshot_tick_writes_one_row_per_sampled_game():
         if "insert into concurrent_player_snapshots" in sql
     ]
     assert len(insert_calls) == SNAPSHOT_SAMPLE_SIZE
-    for (game_id, player_count, snapshot_at), expected_game_id in zip(
+    for (game_id, player_count, snapshot_at, recorded_at), expected_game_id in zip(
         (params for _, params in insert_calls), game_ids
     ):
         assert game_id == expected_game_id
         assert 0 <= player_count <= 60
         assert snapshot_at == fixed_clock()
+        assert 0 <= (recorded_at - snapshot_at).total_seconds() <= 240
 
 
 def test_tick_dispatches_to_the_selected_event_type():
@@ -404,3 +406,131 @@ def test_review_tick_rejects_a_duplicate_user_game_pair():
 
     assert result is None
     assert not any("insert into reviews" in c[0] for c in cur.calls)
+
+
+class ForcedRoll(random.Random):
+    """A real Random (so .choice()/.randint() etc. still work) whose
+    .random() always returns a fixed value — used to force dirty-data rolls
+    to hit or miss deterministically without derailing the tick's other
+    rng draws."""
+
+    def __init__(self, roll):
+        super().__init__()
+        self._roll = roll
+
+    def random(self):
+        return self._roll
+
+
+def test_purchase_tick_jitters_recorded_at_after_purchased_at():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("purchase-1",)])
+
+    purchase_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into purchases" in c[0])
+    purchased_at, recorded_at = params[5], params[6]
+    assert purchased_at == fixed_clock()
+    assert 0 <= (recorded_at - purchased_at).total_seconds() <= 30
+
+
+def test_review_tick_jitters_recorded_at_after_submitted_at():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), None, ("review-1",)])
+
+    review_tick(cur, fixed_clock, random.Random(3))
+
+    _, params = next(c for c in cur.calls if "insert into reviews" in c[0])
+    submitted_at, recorded_at = params[4], params[5]
+    assert submitted_at == fixed_clock()
+    assert 0 <= (recorded_at - submitted_at).total_seconds() <= 60
+
+
+def test_refund_tick_nulls_reason_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[("grant-1", "purchase-1"), ("refund-1",)])
+
+    refund_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    refund_calls = [c for c in cur.calls if "insert into refunds" in c[0]]
+    assert len(refund_calls) == 1
+    assert refund_calls[0][1][1] is None  # reason
+
+
+def test_refund_tick_keeps_reason_on_a_missed_roll():
+    cur = FakeCursor(fetchone_values=[("grant-1", "purchase-1"), ("refund-1",)])
+
+    refund_tick(cur, fixed_clock, ForcedRoll(0.99))
+
+    _, params = next(c for c in cur.calls if "insert into refunds" in c[0])
+    assert params[1] in REFUND_REASONS
+
+
+def test_wishlist_item_tick_duplicates_the_add_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("item-1",), ("item-1",)])
+
+    wishlist_item_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    insert_calls = [c for c in cur.calls if "insert into wishlist_items" in c[0]]
+    assert len(insert_calls) == 2
+    assert insert_calls[0][1] == insert_calls[1][1]
+
+
+def test_wishlist_item_tick_does_not_duplicate_on_a_missed_roll():
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("item-1",)])
+
+    wishlist_item_tick(cur, fixed_clock, ForcedRoll(0.99))
+
+    insert_calls = [c for c in cur.calls if "insert into wishlist_items" in c[0]]
+    assert len(insert_calls) == 1
+
+
+def test_playtime_session_tick_duplicates_the_start_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",), ("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    insert_calls = [c for c in cur.calls if "insert into playtime_sessions" in c[0]]
+    assert len(insert_calls) == 2
+    assert insert_calls[0][1] == insert_calls[1][1]
+
+
+def test_purchase_tick_never_duplicates_even_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("purchase-1",)])
+
+    purchase_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    assert len([c for c in cur.calls if "insert into purchases" in c[0]]) == 1
+
+
+def test_key_redemption_tick_never_duplicates_even_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("kr-1",)])
+
+    key_redemption_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    assert len([c for c in cur.calls if "insert into key_redemptions" in c[0]]) == 1
+
+
+def test_gift_redeem_tick_never_duplicates_even_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[("gift-1", "recipient-1", "game-1")])
+
+    gift_redeem_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    assert len([c for c in cur.calls if "insert into ownership_grants" in c[0]]) == 1
+
+
+def test_review_tick_never_duplicates_even_on_a_forced_roll():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), None, ("review-1",)])
+
+    review_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    assert len([c for c in cur.calls if "insert into reviews" in c[0]]) == 1
+
+
+def test_playtime_session_tick_does_not_duplicate_the_close_branch():
+    # close branch also forces rng.random() == 0.0 (would hit duplicate_rate
+    # too) — duplication must only ever be rolled on the start branch.
+    cur = FakeCursor(fetchone_values=[("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    insert_calls = [c for c in cur.calls if "insert into playtime_sessions" in c[0]]
+    assert len(insert_calls) == 0
+    assert any("update playtime_sessions" in c[0] for c in cur.calls)

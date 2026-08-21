@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 
 import psycopg2
 
+import dirty
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 TICK_MIN_SECONDS = float(os.environ.get("TICK_MIN_SECONDS", "5"))
@@ -72,12 +74,13 @@ def _insert_purchase(cur, clock, rng, user_id, game_id):
     purchased_at = clock()
     amount_cents = rng.randint(999, 5999)
     payment_method = rng.choice(PAYMENT_METHODS)
+    recorded_at = dirty.jittered(purchased_at, rng, dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)
 
     cur.execute(
         "insert into purchases "
-        "(user_id, game_id, amount_cents, currency, payment_method, purchased_at) "
-        "values (%s, %s, %s, %s, %s, %s) returning id",
-        (user_id, game_id, amount_cents, CURRENCY, payment_method, purchased_at),
+        "(user_id, game_id, amount_cents, currency, payment_method, purchased_at, recorded_at) "
+        "values (%s, %s, %s, %s, %s, %s, %s) returning id",
+        (user_id, game_id, amount_cents, CURRENCY, payment_method, purchased_at, recorded_at),
     )
     return cur.fetchone()[0], purchased_at
 
@@ -202,7 +205,7 @@ def refund_tick(cur, clock, rng):
     grant_id, purchase_id = row
 
     refunded_at = clock()
-    reason = rng.choice(REFUND_REASONS)
+    reason = dirty.maybe_null(rng, dirty.REFUND_REASON_NULL_RATE, rng.choice(REFUND_REASONS))
     is_chargeback = rng.random() < CHARGEBACK_CHANCE
 
     cur.execute(
@@ -268,18 +271,24 @@ def concurrent_player_snapshot_tick(cur, clock, rng):
 
     for game_id in game_ids:
         player_count = rng.randint(0, 60)
+        recorded_at = dirty.jittered(snapshot_at, rng, dirty.SNAPSHOT_RECORDED_AT_JITTER_MAX_SECONDS)
         cur.execute(
             "insert into concurrent_player_snapshots "
-            "(game_id, player_count, snapshot_at) values (%s, %s, %s)",
-            (game_id, player_count, snapshot_at),
+            "(game_id, player_count, snapshot_at, recorded_at) values (%s, %s, %s, %s)",
+            (game_id, player_count, snapshot_at, recorded_at),
         )
     return game_ids
 
 
-def _open_close_tick(cur, clock, rng, table, start_col, end_col):
+def _open_close_tick(cur, clock, rng, table, start_col, end_col, duplicate_rate=0.0):
     """Shared open/close pattern for playtime_sessions, family_shares, and
     wishlist_items: with an open row available, roughly half the time close
     it; otherwise (or if none is open) start a new one. Returns the row id.
+
+    On the start branch, rolls dirty.should_duplicate at duplicate_rate: a
+    hit inserts a second, literal copy of the just-started row (distinct id,
+    same user/game/start time) — a start-event heartbeat/add duplicated
+    upstream. Never rolled on the close branch.
     """
     cur.execute(
         f"select id from {table} where {end_col} is null order by random() limit 1"
@@ -297,12 +306,19 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col):
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
-    cur.execute(
+    insert_sql = (
         f"insert into {table} (user_id, game_id, {start_col}) "
-        "values (%s, %s, %s) returning id",
-        (user_id, game_id, clock()),
+        "values (%s, %s, %s) returning id"
     )
-    return cur.fetchone()[0]
+    params = (user_id, game_id, clock())
+    cur.execute(insert_sql, params)
+    row_id = cur.fetchone()[0]
+
+    if dirty.should_duplicate(rng, duplicate_rate, table):
+        cur.execute(insert_sql, params)
+        cur.fetchone()
+
+    return row_id
 
 
 def playtime_session_tick(cur, clock, rng):
@@ -310,7 +326,10 @@ def playtime_session_tick(cur, clock, rng):
     set, ended_at null) or, with an open session available, closes it
     (ended_at set). Returns the session id.
     """
-    return _open_close_tick(cur, clock, rng, "playtime_sessions", "started_at", "ended_at")
+    return _open_close_tick(
+        cur, clock, rng, "playtime_sessions", "started_at", "ended_at",
+        duplicate_rate=dirty.PLAYTIME_START_DUPLICATE_RATE,
+    )
 
 
 def wishlist_item_tick(cur, clock, rng):
@@ -318,7 +337,10 @@ def wishlist_item_tick(cur, clock, rng):
     removed_at null) or, with an open item available, removes it
     (removed_at set). Returns the item id.
     """
-    return _open_close_tick(cur, clock, rng, "wishlist_items", "added_at", "removed_at")
+    return _open_close_tick(
+        cur, clock, rng, "wishlist_items", "added_at", "removed_at",
+        duplicate_rate=dirty.WISHLIST_ADD_DUPLICATE_RATE,
+    )
 
 
 def family_share_tick(cur, clock, rng):
@@ -368,10 +390,13 @@ def review_tick(cur, clock, rng):
     if cur.fetchone() is not None:
         return None
 
+    submitted_at = clock()
+    recorded_at = dirty.jittered(submitted_at, rng, dirty.REVIEW_RECORDED_AT_JITTER_MAX_SECONDS)
     cur.execute(
-        "insert into reviews (user_id, game_id, recommended, playtime_at_review_minutes, submitted_at) "
-        "values (%s, %s, %s, %s, %s) returning id",
-        (user_id, game_id, rng.random() < 0.7, rng.randint(0, 6000), clock()),
+        "insert into reviews "
+        "(user_id, game_id, recommended, playtime_at_review_minutes, submitted_at, recorded_at) "
+        "values (%s, %s, %s, %s, %s, %s) returning id",
+        (user_id, game_id, rng.random() < 0.7, rng.randint(0, 6000), submitted_at, recorded_at),
     )
     return cur.fetchone()[0]
 

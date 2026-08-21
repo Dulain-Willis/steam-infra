@@ -46,6 +46,7 @@ resource "aws_instance" "generator" {
     dockerfile       = file("${path.module}/../generator/Dockerfile")
     requirements     = file("${path.module}/../generator/requirements.txt")
     generator_py     = file("${path.module}/../generator/generator.py")
+    dirty_py         = file("${path.module}/../generator/dirty.py")
     db_host          = aws_db_instance.main.address
     db_port          = "5432"
     db_name          = aws_db_instance.main.db_name
