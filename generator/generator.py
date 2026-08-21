@@ -55,15 +55,9 @@ def pick_event_type(rng, weights=EVENT_WEIGHTS):
     return rng.choices(types, weights=values, k=1)[0]
 
 
-def purchase_tick(cur, clock, rng):
-    """Writes a purchases row against a random seeded user/game, then the
-    fan-in ownership_grants row pointing back at it. Returns the purchase id.
-    """
-    cur.execute("select id from users order by random() limit 1")
-    user_id = cur.fetchone()[0]
-    cur.execute("select id from games order by random() limit 1")
-    game_id = cur.fetchone()[0]
-
+def _insert_purchase(cur, clock, rng, user_id, game_id):
+    """Shared by purchase_tick and gift_send_tick: writes a purchases row
+    for the given buyer/game and returns its id."""
     purchased_at = clock()
     amount_cents = rng.randint(999, 5999)
     payment_method = rng.choice(PAYMENT_METHODS)
@@ -74,7 +68,19 @@ def purchase_tick(cur, clock, rng):
         "values (%s, %s, %s, %s, %s, %s) returning id",
         (user_id, game_id, amount_cents, CURRENCY, payment_method, purchased_at),
     )
-    purchase_id = cur.fetchone()[0]
+    return cur.fetchone()[0], purchased_at
+
+
+def purchase_tick(cur, clock, rng):
+    """Writes a purchases row against a random seeded user/game, then the
+    fan-in ownership_grants row pointing back at it. Returns the purchase id.
+    """
+    cur.execute("select id from users order by random() limit 1")
+    user_id = cur.fetchone()[0]
+    cur.execute("select id from games order by random() limit 1")
+    game_id = cur.fetchone()[0]
+
+    purchase_id, purchased_at = _insert_purchase(cur, clock, rng, user_id, game_id)
 
     cur.execute(
         "insert into ownership_grants (user_id, game_id, source, source_id, granted_at) "
@@ -96,17 +102,7 @@ def gift_send_tick(cur, clock, rng):
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
 
-    sent_at = clock()
-    amount_cents = rng.randint(999, 5999)
-    payment_method = rng.choice(PAYMENT_METHODS)
-
-    cur.execute(
-        "insert into purchases "
-        "(user_id, game_id, amount_cents, currency, payment_method, purchased_at) "
-        "values (%s, %s, %s, %s, %s, %s) returning id",
-        (sender_id, game_id, amount_cents, CURRENCY, payment_method, sent_at),
-    )
-    purchase_id = cur.fetchone()[0]
+    purchase_id, sent_at = _insert_purchase(cur, clock, rng, sender_id, game_id)
 
     cur.execute(
         "insert into gifts (purchase_id, sender_id, recipient_id, sent_at) "
