@@ -45,7 +45,7 @@ resource "aws_instance" "generator" {
   user_data = templatefile("${path.module}/generator_user_data.sh.tpl", {
     dockerfile       = file("${path.module}/../generator/Dockerfile")
     requirements     = file("${path.module}/../generator/requirements.txt")
-    heartbeat_py     = file("${path.module}/../generator/heartbeat.py")
+    generator_py     = file("${path.module}/../generator/generator.py")
     db_host          = aws_db_instance.main.address
     db_port          = "5432"
     db_name          = aws_db_instance.main.db_name

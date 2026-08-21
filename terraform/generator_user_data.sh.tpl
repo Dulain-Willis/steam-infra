@@ -14,9 +14,9 @@ cat > /opt/generator/requirements.txt <<'REQUIREMENTS_EOF'
 ${requirements}
 REQUIREMENTS_EOF
 
-cat > /opt/generator/heartbeat.py <<'HEARTBEAT_EOF'
-${heartbeat_py}
-HEARTBEAT_EOF
+cat > /opt/generator/generator.py <<'GENERATOR_EOF'
+${generator_py}
+GENERATOR_EOF
 
 docker build -t steam-generator /opt/generator
 
