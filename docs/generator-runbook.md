@@ -2,8 +2,7 @@
 
 The generator EC2 instance runs a Docker container that ticks against
 Postgres over the private VPC on a jittered interval, picking an event
-type by weight and writing the corresponding rows. Registered event
-types, all feeding the same `ownership_grants` fan-in:
+type by weight and writing the corresponding rows. Registered event types:
 
 - `purchase` — writes a `purchases` row and the fan-in `ownership_grants` row.
 - `gift` — two-phase: sends a new `gifts` row (`redeemed_at` null), or
@@ -14,10 +13,16 @@ types, all feeding the same `ownership_grants` fan-in:
 - `refund` — writes a `refunds` row against an existing purchase and sets
   `revoked_at` on the matching `ownership_grants` row (never deletes or
   duplicates it).
-- `price_change` — nudges a random seeded `game_prices` row and writes the
+- `price_change` — nudges a random `game_prices` row and writes the
   `price_changes` audit row.
-- `concurrent_player_snapshot` — writes a `concurrent_player_snapshots`
-  row for a sampled batch of games.
+- `concurrent_player_snapshot` — writes a `concurrent_player_snapshots` row
+  for a sample of games.
+- `playtime_session`, `family_share`, `wishlist_item` — open/close pattern:
+  a tick either starts a new row (nullable end column left null) or closes
+  an existing open one (end column set).
+- `review` — writes a `reviews` row for a random (user, game) pair; a pair
+  that's already reviewed is skipped rather than stored twice
+  (`unique(user_id, game_id)`).
 
 Start/stop is manual, not scheduled: leave it off between dev sessions to
 keep the environment in the ~$0-3/month band.

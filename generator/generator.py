@@ -5,15 +5,17 @@ executes it, writing rows through the given cursor. Clock and RNG are
 injected — never read from globals — so ticks are forceable and
 unit-testable without a live Postgres connection.
 
-`purchase`, `key_redemption`, `refund`, `price_change`, and
-`concurrent_player_snapshot` are single-phase: one call writes the event
-row (plus, for purchase/key_redemption, the fan-in `ownership_grants` row,
-or for refund, revokes an existing one). `gift` is two-phase, following
-the open/close nullable-timestamp pattern used elsewhere in the schema: a
-send half inserts a `gifts` row with `redeemed_at` null, and a redeem half
-— picked probabilistically when an unredeemed gift exists — closes it and
-only then writes the `ownership_grants` row (source='gift'), since
-ownership doesn't change hands until redemption.
+`purchase`, `key_redemption`, `refund`, `price_change`,
+`concurrent_player_snapshot`, and `review` are single-phase: one call
+writes the event row (plus, for purchase/key_redemption, the fan-in
+`ownership_grants` row, or for refund, revokes an existing one). `gift`,
+`playtime_session`, `family_share`, and `wishlist_item` are two-phase,
+following the open/close nullable-timestamp pattern used elsewhere in the
+schema: a "start"/"send" half inserts a row with the close column null,
+and a "close"/"redeem" half — picked probabilistically when an open row
+exists — closes it (and, for gift, only then writes the fan-in
+`ownership_grants` row, since ownership doesn't change hands until
+redemption).
 """
 
 import logging
@@ -39,9 +41,11 @@ REFUND_REASONS = ["not_as_described", "technical_issues", "accidental_purchase",
 GIFT_REDEEM_CHANCE = 0.5  # when an unredeemed gift exists, chance a gift tick closes it instead of sending a new one
 CHARGEBACK_CHANCE = 0.1
 
-# Weighted event types: (name, weight). Relative weight reflects rarity —
-# catalog events (price_change, concurrent_player_snapshot) are rarer than
-# per-user purchases, and refund is the rarest event of all.
+# Weighted event types: (name, weight). Catalog events (price_change,
+# concurrent_player_snapshot) are rarer than per-user purchases; playtime
+# sessions fire far more often than the ownership events since a real
+# player racks up many sessions per purchase; refund is the rarest event
+# of all.
 EVENT_WEIGHTS = [
     ("purchase", 5.0),
     ("gift", 2.0),
@@ -49,6 +53,10 @@ EVENT_WEIGHTS = [
     ("refund", 1.0),
     ("price_change", 1.0),
     ("concurrent_player_snapshot", 2.0),
+    ("playtime_session", 6.0),
+    ("family_share", 0.5),
+    ("wishlist_item", 1.5),
+    ("review", 0.8),
 ]
 
 
@@ -268,6 +276,106 @@ def concurrent_player_snapshot_tick(cur, clock, rng):
     return game_ids
 
 
+def _open_close_tick(cur, clock, rng, table, start_col, end_col):
+    """Shared open/close pattern for playtime_sessions, family_shares, and
+    wishlist_items: with an open row available, roughly half the time close
+    it; otherwise (or if none is open) start a new one. Returns the row id.
+    """
+    cur.execute(
+        f"select id from {table} where {end_col} is null order by random() limit 1"
+    )
+    open_row = cur.fetchone()
+    if open_row and rng.random() < 0.5:
+        row_id = open_row[0]
+        cur.execute(
+            f"update {table} set {end_col} = %s where id = %s",
+            (clock(), row_id),
+        )
+        return row_id
+
+    cur.execute("select id from users order by random() limit 1")
+    user_id = cur.fetchone()[0]
+    cur.execute("select id from games order by random() limit 1")
+    game_id = cur.fetchone()[0]
+    cur.execute(
+        f"insert into {table} (user_id, game_id, {start_col}) "
+        "values (%s, %s, %s) returning id",
+        (user_id, game_id, clock()),
+    )
+    return cur.fetchone()[0]
+
+
+def playtime_session_tick(cur, clock, rng):
+    """Open/close pattern on playtime_sessions: starts a session (started_at
+    set, ended_at null) or, with an open session available, closes it
+    (ended_at set). Returns the session id.
+    """
+    return _open_close_tick(cur, clock, rng, "playtime_sessions", "started_at", "ended_at")
+
+
+def wishlist_item_tick(cur, clock, rng):
+    """Open/close pattern on wishlist_items: adds an item (added_at set,
+    removed_at null) or, with an open item available, removes it
+    (removed_at set). Returns the item id.
+    """
+    return _open_close_tick(cur, clock, rng, "wishlist_items", "added_at", "removed_at")
+
+
+def family_share_tick(cur, clock, rng):
+    """Same open/close pattern, but family_shares keys on owner_id/borrower_id
+    rather than user_id/game_id, so it can't share the generic helper's
+    insert shape.
+    """
+    cur.execute(
+        "select id from family_shares where ended_at is null order by random() limit 1"
+    )
+    open_row = cur.fetchone()
+    if open_row and rng.random() < 0.5:
+        share_id = open_row[0]
+        cur.execute(
+            "update family_shares set ended_at = %s where id = %s",
+            (clock(), share_id),
+        )
+        return share_id
+
+    cur.execute("select id from users order by random() limit 2")
+    owner_id = cur.fetchone()[0]
+    borrower_id = cur.fetchone()[0]
+    cur.execute(
+        "insert into family_shares (owner_id, borrower_id, started_at) "
+        "values (%s, %s, %s) returning id",
+        (owner_id, borrower_id, clock()),
+    )
+    return cur.fetchone()[0]
+
+
+def review_tick(cur, clock, rng):
+    """Writes a reviews row for a random (user, game) pair. reviews carries
+    unique(user_id, game_id); a pair that's already reviewed is a
+    rejected/retried write, pre-checked here rather than caught as a
+    constraint violation, since the tick loop has no existing retry/rollback
+    machinery to catch into. Returns the review id, or None if rejected.
+    """
+    cur.execute("select id from users order by random() limit 1")
+    user_id = cur.fetchone()[0]
+    cur.execute("select id from games order by random() limit 1")
+    game_id = cur.fetchone()[0]
+
+    cur.execute(
+        "select id from reviews where user_id = %s and game_id = %s",
+        (user_id, game_id),
+    )
+    if cur.fetchone() is not None:
+        return None
+
+    cur.execute(
+        "insert into reviews (user_id, game_id, recommended, playtime_at_review_minutes, submitted_at) "
+        "values (%s, %s, %s, %s, %s) returning id",
+        (user_id, game_id, rng.random() < 0.7, rng.randint(0, 6000), clock()),
+    )
+    return cur.fetchone()[0]
+
+
 EVENT_HANDLERS = {
     "purchase": purchase_tick,
     "gift": gift_tick,
@@ -275,6 +383,10 @@ EVENT_HANDLERS = {
     "refund": refund_tick,
     "price_change": price_change_tick,
     "concurrent_player_snapshot": concurrent_player_snapshot_tick,
+    "playtime_session": playtime_session_tick,
+    "family_share": family_share_tick,
+    "wishlist_item": wishlist_item_tick,
+    "review": review_tick,
 }
 
 

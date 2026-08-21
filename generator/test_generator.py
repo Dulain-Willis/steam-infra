@@ -3,17 +3,22 @@ from collections import Counter
 from datetime import datetime, timezone
 
 from generator import (
+    EVENT_HANDLERS,
     EVENT_WEIGHTS,
     concurrent_player_snapshot_tick,
+    family_share_tick,
     gift_redeem_tick,
     gift_send_tick,
     gift_tick,
     key_redemption_tick,
     pick_event_type,
+    playtime_session_tick,
     price_change_tick,
     purchase_tick,
     refund_tick,
+    review_tick,
     tick,
+    wishlist_item_tick,
 )
 
 
@@ -42,31 +47,34 @@ def fixed_clock():
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def test_pick_event_type_seeded_rng_matches_expected_distribution():
+def test_pick_event_type_covers_all_registered_event_types():
     rng = random.Random(42)
     picks = [pick_event_type(rng) for _ in range(2000)]
-    # Exercised through the real weighted selector (not a shortcut), so
-    # adding/reweighting event types changes this test's expectations
-    # rather than silently passing.
-    assert set(picks) == {
-        "purchase",
-        "gift",
-        "key_redemption",
-        "refund",
-        "price_change",
-        "concurrent_player_snapshot",
+    # Exercised through the weighted selector (not a shortcut), so adding or
+    # reweighting an event type changes this test's expectations rather than
+    # silently passing. Every weighted type must have a matching handler.
+    assert set(picks) == set(EVENT_HANDLERS.keys())
+    assert {name for name, _ in EVENT_WEIGHTS} == set(EVENT_HANDLERS.keys())
+
+
+def test_playtime_session_weighted_highest_relative_to_ownership_events():
+    weights = dict(EVENT_WEIGHTS)
+    assert weights["playtime_session"] > weights["purchase"]
+
+
+def test_refund_weighted_lowest_among_the_ownership_event_types():
+    # Acceptance criterion (#12): event weights reflect relative rarity,
+    # refunds rarest among purchase/gift/key_redemption/refund (the event
+    # types #12 introduces/shares the ownership_grants fan-in with).
+    # Checked against the weight table directly rather than sampled counts,
+    # since a tie in weight can flip which type a given sample draws fewer
+    # of. Other, unrelated event types (e.g. family_share, from a sibling
+    # ticket) may be weighted even rarer without violating this criterion.
+    weights = dict(EVENT_WEIGHTS)
+    ownership_event_weights = {
+        name: w for name, w in weights.items() if name in ("purchase", "gift", "key_redemption", "refund")
     }
-    counts = Counter(picks)
-    total = sum(w for _, w in EVENT_WEIGHTS)
-    for name, weight in EVENT_WEIGHTS:
-        expected = weight / total
-        assert abs(counts[name] / len(picks) - expected) < 0.05
-    # Acceptance criterion: refund's weight is (tied-)lowest, i.e. rarest.
-    # Checked against the weight table directly, not sampled counts, since
-    # a tie in weight (e.g. with price_change) can flip which one a given
-    # sample happens to draw fewer of.
-    weights_by_name = dict(EVENT_WEIGHTS)
-    assert weights_by_name["refund"] == min(weights_by_name.values())
+    assert ownership_event_weights["refund"] == min(ownership_event_weights.values())
 
 
 def test_pick_event_type_respects_weights_with_multiple_types():
@@ -103,24 +111,6 @@ def test_purchase_tick_produces_exactly_one_ownership_grant_for_the_purchase():
 
     purchase_calls = [(sql, params) for sql, params in cur.calls if "insert into purchases" in sql]
     assert len(purchase_calls) == 1
-
-
-def test_tick_dispatches_to_the_selected_event_type():
-    # seed 1 lands on "purchase" given today's EVENT_WEIGHTS (see
-    # test_pick_event_type_seeded_rng_matches_expected_distribution for the
-    # full set of registered types).
-    cur = FakeCursor(fetchone_values=[("u",), ("g",), ("p",)])
-    event_type = tick(cur, fixed_clock, random.Random(1))
-
-    assert event_type == "purchase"
-    assert {name for name, _ in EVENT_WEIGHTS} == {
-        "purchase",
-        "gift",
-        "key_redemption",
-        "refund",
-        "price_change",
-        "concurrent_player_snapshot",
-    }
 
 
 def test_gift_send_tick_creates_purchase_and_open_gift_row():
@@ -310,3 +300,107 @@ def test_concurrent_player_snapshot_tick_writes_one_row_per_sampled_game():
         assert game_id == expected_game_id
         assert 0 <= player_count <= 60
         assert snapshot_at == fixed_clock()
+
+
+def test_tick_dispatches_to_the_selected_event_type():
+    # seed 1 lands on "purchase" given today's EVENT_WEIGHTS.
+    cur = FakeCursor(fetchone_values=[("u",), ("g",), ("p",)])
+    event_type = tick(cur, fixed_clock, random.Random(1))
+
+    assert event_type == "purchase"
+    assert any("insert into purchases" in c[0] for c in cur.calls)
+
+
+def test_playtime_session_tick_starts_a_session_when_none_is_open():
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+
+    result = playtime_session_tick(cur, fixed_clock, random.Random(0))
+
+    assert result == "session-1"
+    sql, params = next(c for c in cur.calls if "insert into playtime_sessions" in c[0])
+    assert "started_at" in sql
+    assert params == ("user-1", "game-1", fixed_clock())
+    assert not any("update playtime_sessions" in c[0] for c in cur.calls)
+
+
+def test_playtime_session_tick_closes_an_open_session():
+    cur = FakeCursor(fetchone_values=[("session-1",)])
+    rng = random.Random()
+    rng.random = lambda: 0.0  # force the "close it" branch
+
+    result = playtime_session_tick(cur, fixed_clock, rng)
+
+    assert result == "session-1"
+    sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
+    assert "ended_at" in sql
+    assert params == (fixed_clock(), "session-1")
+    assert not any("insert into playtime_sessions" in c[0] for c in cur.calls)
+
+
+def test_wishlist_item_tick_open_close_pattern():
+    # open branch: no open item -> insert with added_at
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("item-1",)])
+    result = wishlist_item_tick(cur, fixed_clock, random.Random(0))
+    assert result == "item-1"
+    sql, params = next(c for c in cur.calls if "insert into wishlist_items" in c[0])
+    assert "added_at" in sql
+    assert params == ("user-1", "game-1", fixed_clock())
+
+    # close branch: open item found -> update removed_at
+    cur2 = FakeCursor(fetchone_values=[("item-2",)])
+    rng2 = random.Random()
+    rng2.random = lambda: 0.0
+    result2 = wishlist_item_tick(cur2, fixed_clock, rng2)
+    assert result2 == "item-2"
+    sql2, params2 = next(c for c in cur2.calls if "update wishlist_items" in c[0])
+    assert "removed_at" in sql2
+    assert params2 == (fixed_clock(), "item-2")
+
+
+def test_family_share_tick_open_close_pattern():
+    # open branch: no open share -> insert with started_at, distinct owner/borrower
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("user-2",), ("share-1",)])
+    result = family_share_tick(cur, fixed_clock, random.Random(0))
+    assert result == "share-1"
+    sql, params = next(c for c in cur.calls if "insert into family_shares" in c[0])
+    assert "started_at" in sql
+    assert params == ("user-1", "user-2", fixed_clock())
+
+    # close branch: open share found -> update ended_at
+    cur2 = FakeCursor(fetchone_values=[("share-2",)])
+    rng2 = random.Random()
+    rng2.random = lambda: 0.0
+    result2 = family_share_tick(cur2, fixed_clock, rng2)
+    assert result2 == "share-2"
+    sql2, params2 = next(c for c in cur2.calls if "update family_shares" in c[0])
+    assert "ended_at" in sql2
+    assert params2 == (fixed_clock(), "share-2")
+
+
+def test_review_tick_writes_a_review_for_a_fresh_pair():
+    cur = FakeCursor(
+        fetchone_values=[("user-1",), ("game-1",), None, ("review-1",)]
+    )
+
+    result = review_tick(cur, fixed_clock, random.Random(3))
+
+    assert result == "review-1"
+    insert_calls = [c for c in cur.calls if "insert into reviews" in c[0]]
+    assert len(insert_calls) == 1
+    _, params = insert_calls[0]
+    assert params[0] == "user-1"
+    assert params[1] == "game-1"
+    assert params[4] == fixed_clock()
+
+
+def test_review_tick_rejects_a_duplicate_user_game_pair():
+    # the uniqueness pre-check finds an existing review for the pair, so the
+    # tick must not attempt a second insert (no stored duplicate row).
+    cur = FakeCursor(
+        fetchone_values=[("user-1",), ("game-1",), ("existing-review-id",)]
+    )
+
+    result = review_tick(cur, fixed_clock, random.Random(3))
+
+    assert result is None
+    assert not any("insert into reviews" in c[0] for c in cur.calls)
