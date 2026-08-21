@@ -5,6 +5,14 @@ Postgres over the private VPC on a jittered interval, picking an event
 type by weight and writing the corresponding rows. Registered event types:
 
 - `purchase` — writes a `purchases` row and the fan-in `ownership_grants` row.
+- `gift` — two-phase: sends a new `gifts` row (`redeemed_at` null), or
+  redeems an existing unredeemed one, writing the fan-in
+  `ownership_grants` row only at redemption time.
+- `key_redemption` — writes a `key_redemptions` row and the fan-in
+  `ownership_grants` row.
+- `refund` — writes a `refunds` row against an existing purchase and sets
+  `revoked_at` on the matching `ownership_grants` row (never deletes or
+  duplicates it).
 - `price_change` — nudges a random `game_prices` row and writes the
   `price_changes` audit row.
 - `concurrent_player_snapshot` — writes a `concurrent_player_snapshots` row

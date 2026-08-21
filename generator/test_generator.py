@@ -7,10 +7,15 @@ from generator import (
     EVENT_WEIGHTS,
     concurrent_player_snapshot_tick,
     family_share_tick,
+    gift_redeem_tick,
+    gift_send_tick,
+    gift_tick,
+    key_redemption_tick,
     pick_event_type,
     playtime_session_tick,
     price_change_tick,
     purchase_tick,
+    refund_tick,
     review_tick,
     tick,
     wishlist_item_tick,
@@ -57,6 +62,21 @@ def test_playtime_session_weighted_highest_relative_to_ownership_events():
     assert weights["playtime_session"] > weights["purchase"]
 
 
+def test_refund_weighted_lowest_among_the_ownership_event_types():
+    # Acceptance criterion (#12): event weights reflect relative rarity,
+    # refunds rarest among purchase/gift/key_redemption/refund (the event
+    # types #12 introduces/shares the ownership_grants fan-in with).
+    # Checked against the weight table directly rather than sampled counts,
+    # since a tie in weight can flip which type a given sample draws fewer
+    # of. Other, unrelated event types (e.g. family_share, from a sibling
+    # ticket) may be weighted even rarer without violating this criterion.
+    weights = dict(EVENT_WEIGHTS)
+    ownership_event_weights = {
+        name: w for name, w in weights.items() if name in ("purchase", "gift", "key_redemption", "refund")
+    }
+    assert ownership_event_weights["refund"] == min(ownership_event_weights.values())
+
+
 def test_pick_event_type_respects_weights_with_multiple_types():
     rng = random.Random(1)
     weights = [("purchase", 3.0), ("noop", 1.0)]
@@ -91,6 +111,118 @@ def test_purchase_tick_produces_exactly_one_ownership_grant_for_the_purchase():
 
     purchase_calls = [(sql, params) for sql, params in cur.calls if "insert into purchases" in sql]
     assert len(purchase_calls) == 1
+
+
+def test_gift_send_tick_creates_purchase_and_open_gift_row():
+    sender_id, recipient_id, game_id, purchase_id, gift_id = (
+        "sender-1",
+        "recipient-1",
+        "game-1",
+        "purchase-1",
+        "gift-1",
+    )
+    cur = FakeCursor(
+        fetchone_values=[(sender_id,), (recipient_id,), (game_id,), (purchase_id,), (gift_id,)]
+    )
+
+    result = gift_send_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == gift_id
+    gift_calls = [(sql, params) for sql, params in cur.calls if "insert into gifts" in sql]
+    assert len(gift_calls) == 1
+    sql, params = gift_calls[0]
+    assert params == (purchase_id, sender_id, recipient_id, fixed_clock())
+    # no ownership_grants row yet — ownership doesn't move until redemption
+    assert not any("ownership_grants" in sql for sql, _ in cur.calls)
+
+
+def test_gift_redeem_tick_writes_ownership_grant_at_redemption_time():
+    gift_id, recipient_id, game_id = "gift-1", "recipient-1", "game-1"
+    cur = FakeCursor(fetchone_values=[(gift_id, recipient_id, game_id)])
+
+    result = gift_redeem_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == gift_id
+    update_calls = [(sql, params) for sql, params in cur.calls if sql.startswith("update gifts")]
+    assert update_calls == [("update gifts set redeemed_at = %s where id = %s", (fixed_clock(), gift_id))]
+
+    grant_calls = [(sql, params) for sql, params in cur.calls if "ownership_grants" in sql]
+    assert len(grant_calls) == 1
+    sql, params = grant_calls[0]
+    assert "'gift'" in sql
+    assert params == (recipient_id, game_id, gift_id, fixed_clock())
+
+
+def test_gift_tick_sends_when_no_open_gift_exists():
+    cur = FakeCursor(
+        fetchone_values=[None, ("sender-1",), ("recipient-1",), ("game-1",), ("purchase-1",), ("gift-1",)]
+    )
+
+    event = gift_tick(cur, fixed_clock, random.Random(0))
+
+    assert event == "gift-1"
+    assert any("insert into gifts" in sql for sql, _ in cur.calls)
+    assert not any("update gifts" in sql for sql, _ in cur.calls)
+
+
+def test_gift_tick_redeems_when_open_gift_exists():
+    class AlwaysRedeemRng:
+        def random(self):
+            return 0.0  # forces redeem branch (< GIFT_REDEEM_CHANCE)
+
+    cur = FakeCursor(fetchone_values=[("open-gift-1",), ("gift-1", "recipient-1", "game-1")])
+
+    event = gift_tick(cur, fixed_clock, AlwaysRedeemRng())
+
+    assert event == "gift-1"
+    assert any("update gifts" in sql for sql, _ in cur.calls)
+    assert not any("insert into gifts" in sql for sql, _ in cur.calls)
+
+
+def test_key_redemption_tick_produces_exactly_one_ownership_grant():
+    user_id, game_id, key_redemption_id = "user-1", "game-1", "kr-1"
+    cur = FakeCursor(fetchone_values=[(user_id,), (game_id,), (key_redemption_id,)])
+
+    result = key_redemption_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == key_redemption_id
+    kr_calls = [(sql, params) for sql, params in cur.calls if "insert into key_redemptions" in sql]
+    assert len(kr_calls) == 1
+
+    grant_calls = [(sql, params) for sql, params in cur.calls if "ownership_grants" in sql]
+    assert len(grant_calls) == 1
+    sql, params = grant_calls[0]
+    assert "'key_redemption'" in sql
+    assert params == (user_id, game_id, key_redemption_id, fixed_clock())
+
+
+def test_refund_tick_sets_revoked_at_on_the_correct_existing_grant():
+    grant_id, purchase_id, refund_id = "grant-1", "purchase-1", "refund-1"
+    cur = FakeCursor(fetchone_values=[(grant_id, purchase_id), (refund_id,)])
+
+    result = refund_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == refund_id
+    refund_calls = [(sql, params) for sql, params in cur.calls if "insert into refunds" in sql]
+    assert len(refund_calls) == 1
+    assert refund_calls[0][1][0] == purchase_id
+
+    update_calls = [(sql, params) for sql, params in cur.calls if sql.startswith("update ownership_grants")]
+    assert update_calls == [
+        ("update ownership_grants set revoked_at = %s where id = %s", (fixed_clock(), grant_id))
+    ]
+    # never delete/duplicate the grant row
+    assert not any("delete" in sql.lower() for sql, _ in cur.calls)
+    assert len([c for c in cur.calls if "insert into ownership_grants" in c[0]]) == 0
+
+
+def test_refund_tick_is_a_noop_when_nothing_is_refundable():
+    cur = FakeCursor(fetchone_values=[None])
+
+    result = refund_tick(cur, fixed_clock, random.Random(7))
+
+    assert result is None
+    assert len(cur.calls) == 1
 
 
 def test_price_change_tick_captures_old_and_new_price_cents():
