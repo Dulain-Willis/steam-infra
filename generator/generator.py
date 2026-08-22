@@ -30,8 +30,8 @@ import dirty
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
-TICK_MIN_SECONDS = float(os.environ.get("TICK_MIN_SECONDS", "5"))
-TICK_MAX_SECONDS = float(os.environ.get("TICK_MAX_SECONDS", "15"))
+TICK_MIN_SECONDS = float(os.environ.get("TICK_MIN_SECONDS", "1"))
+TICK_MAX_SECONDS = float(os.environ.get("TICK_MAX_SECONDS", "2"))
 
 PAYMENT_METHODS = ["credit_card", "paypal", "steam_wallet"]
 # ponytail: purchases are always USD regardless of the per-region

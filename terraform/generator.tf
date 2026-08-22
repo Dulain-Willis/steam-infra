@@ -55,9 +55,12 @@ resource "aws_instance" "generator" {
     db_name          = aws_db_instance.main.db_name
     db_user          = aws_db_instance.main.username
     db_password      = random_password.db.result
-    tick_min_seconds = "5"
-    tick_max_seconds = "15"
-  })
+    # Calibrated (#16) to land combined event-table throughput at ~1-3
+    # events/sec against the seeded 50k-user/3k-game catalog. See
+    # docs/generator-runbook.md for the measured run.
+    tick_min_seconds = "1"
+    tick_max_seconds = "2"
+  }))
 
   tags = {
     Name = "steam-infra-generator"
