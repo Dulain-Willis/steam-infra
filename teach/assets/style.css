@@ -1,0 +1,186 @@
+/* Shared stylesheet for teach workspace lessons — Tufte-ish, print-friendly */
+
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+h1 {
+  font-size: 2rem;
+  margin-bottom: 0.2em;
+  line-height: 1.2;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin-top: 0;
+  margin-bottom: 2.5rem;
+  font-style: italic;
+}
+
+h2 {
+  font-size: 1.3rem;
+  margin-top: 2.8rem;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.3rem;
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin-top: 1.8rem;
+  color: var(--accent);
+}
+
+p { margin: 0.9em 0; }
+
+code, pre {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+code {
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}
+
+pre {
+  background: var(--code-bg);
+  padding: 1rem 1.2rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.4;
+  border-left: 3px solid var(--accent);
+}
+
+pre code { background: none; padding: 0; }
+
+blockquote {
+  margin: 1.2em 0;
+  padding-left: 1rem;
+  border-left: 3px solid var(--rule);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.callout {
+  background: var(--code-bg);
+  border-left: 3px solid var(--accent);
+  padding: 0.9rem 1.2rem;
+  border-radius: 0 6px 6px 0;
+  margin: 1.5rem 0;
+}
+
+.callout-title {
+  font-weight: bold;
+  color: var(--accent);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+}
+
+.diagram {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  background: var(--code-bg);
+  padding: 1.2rem;
+  border-radius: 6px;
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+.quiz {
+  background: #fff;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1.2rem 1.4rem;
+  margin: 1.2rem 0;
+}
+
+.quiz-q { font-weight: bold; margin-bottom: 0.6rem; }
+
+.quiz details summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.quiz details {
+  margin-top: 0.5rem;
+}
+
+.quiz details[open] summary { margin-bottom: 0.4rem; }
+
+.quiz-answer {
+  background: var(--code-bg);
+  padding: 0.6rem 0.9rem;
+  border-radius: 4px;
+  font-size: 0.92rem;
+}
+
+.source {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.source a { color: var(--accent); }
+
+nav.lesson-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.9rem;
+}
+
+nav.lesson-nav a { color: var(--accent); text-decoration: none; }
+nav.lesson-nav a:hover { text-decoration: underline; }
+
+.ask-agent {
+  margin-top: 3rem;
+  padding: 1rem 1.2rem;
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+@media print {
+  body { max-width: 100%; }
+  .ask-agent { display: none; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e4da;
+    --paper: #1c1b19;
+    --rule: #3a382f;
+    --accent: #e0784f;
+    --muted: #9a9384;
+    --code-bg: #262420;
+  }
+  .quiz { background: #221f1a; }
+}

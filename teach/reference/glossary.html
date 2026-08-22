@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Glossary: AWS Networking</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+h1 { font-size: 2rem; margin-bottom: 0.2em; line-height: 1.2; }
+.subtitle { color: var(--muted); font-size: 1.05rem; margin-top: 0; margin-bottom: 2.5rem; font-style: italic; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--accent); }
+p { margin: 0.9em 0; }
+code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>AWS Networking Glossary</h1>
+<p class="subtitle">Quick reference. Terms as used across steam-infra lessons — see <a href="../lessons/0001-vpc-core-concepts.html">Lesson 1</a>.</p>
+
+<h3>VPC (Virtual Private Cloud)</h3>
+<p>Isolated private network space in AWS, defined by a CIDR block. Nothing outside it is reachable unless explicitly connected.</p>
+
+<h3>CIDR block</h3>
+<p><code>a.b.c.d/n</code> — an IP range. <code>n</code> = fixed prefix bits; <code>32-n</code> bits free. Smaller <code>n</code> = bigger range. <code>/16</code> = 65,536 addresses, <code>/24</code> = 256.</p>
+
+<h3>Availability Zone (AZ)</h3>
+<p>One physically distinct datacenter cluster within an AWS region. Used for fault isolation — spread resources across AZs so one outage doesn't take everything down.</p>
+
+<h3>Subnet</h3>
+<p>A CIDR sub-range carved out of a VPC. Always pinned to exactly one AZ. "Public" or "private" is not inherent — determined entirely by its route table (see below).</p>
+
+<h3>Internet Gateway (IGW)</h3>
+<p>AWS-managed component attached to a VPC that provides the only path to/from the public internet. Necessary but not sufficient — a route table must point traffic at it.</p>
+
+<h3>Route table</h3>
+<p>List of rules: destination CIDR → target. Every subnet uses one route table — either an explicit association, or the VPC's implicit main table by default.</p>
+
+<h3>0.0.0.0/0</h3>
+<p>The "default route" — matches any destination not covered by a more specific rule. A route table with <code>0.0.0.0/0 → igw</code> is what makes a subnet "public."</p>
+
+<h3>Main route table</h3>
+<p>Every VPC has one implicit default route table. Any subnet without an explicit association uses it. Has no internet route by default — private by default.</p>
+
+<h3>Route table association</h3>
+<p>Explicit link binding a subnet to a specific (non-main) route table, overriding the main-table default for that subnet only.</p>
+
+<h3>map_public_ip_on_launch</h3>
+<p>Subnet setting: auto-assigns a public IP to instances launched there. Only useful if the subnet's route table also has an internet route — otherwise the public IP goes nowhere.</p>
+
+<h3>Bastion host</h3>
+<p>Single hardened instance in a public subnet acting as the sanctioned entry point into private subnets. Shrinks the internet-facing attack surface to one box instead of exposing every private service.</p>
+
+<h3>Security group</h3>
+<p>Stateful virtual firewall attached to an instance/interface. Allow-only rules for inbound and outbound traffic. Independent from route tables — a packet needs a route <em>and</em> a security-group allow to arrive.</p>
+
+<h3>IAM role</h3>
+<p>A set of permissions with no permanent owner — assumed temporarily by whatever's trusted to assume it (contrast: an IAM user has permanent credentials).</p>
+
+<h3>Trust policy (assume role policy)</h3>
+<p>Defines <em>who</em> is allowed to assume a role. Separate from what the role can do once assumed — that's the attached permissions policy.</p>
+
+<h3>Managed policy</h3>
+<p>AWS-authored, AWS-maintained bundle of permissions you attach to a role/user, e.g. <code>AmazonSSMManagedInstanceCore</code>.</p>
+
+<h3>Instance profile</h3>
+<p>Thin wrapper holding one IAM role, which is what an EC2 instance actually attaches (it can't attach a role directly).</p>
+
+<h3>SSM Session Manager</h3>
+<p>AWS Systems Manager feature giving shell access to an instance via an outbound agent connection — no SSH, no inbound port needed.</p>
+
+<h3>AMI (Amazon Machine Image)</h3>
+<p>A bootable disk snapshot — OS plus whatever's baked in — that an EC2 instance launches from.</p>
+</body>
+</html>

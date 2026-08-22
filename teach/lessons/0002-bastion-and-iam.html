@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 2: The Bastion &amp; IAM</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+h1 { font-size: 2rem; margin-bottom: 0.2em; line-height: 1.2; }
+.subtitle { color: var(--muted); font-size: 1.05rem; margin-top: 0; margin-bottom: 2.5rem; font-style: italic; }
+h2 { font-size: 1.3rem; margin-top: 2.8rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.3rem; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--accent); }
+p { margin: 0.9em 0; }
+code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px; overflow-x: auto; line-height: 1.4; border-left: 3px solid var(--accent); }
+pre code { background: none; padding: 0; }
+blockquote { margin: 1.2em 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); font-style: italic; }
+.callout { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.9rem 1.2rem; border-radius: 0 6px 6px 0; margin: 1.5rem 0; }
+.callout-title { font-weight: bold; color: var(--accent); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; background: var(--code-bg); padding: 1.2rem; border-radius: 6px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+.quiz { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.4rem; margin: 1.2rem 0; }
+.quiz-q { font-weight: bold; margin-bottom: 0.6rem; }
+.quiz details summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+.quiz details { margin-top: 0.5rem; }
+.quiz details[open] summary { margin-bottom: 0.4rem; }
+.quiz-answer { background: var(--code-bg); padding: 0.6rem 0.9rem; border-radius: 4px; font-size: 0.92rem; }
+.source { font-size: 0.85rem; color: var(--muted); }
+.source a { color: var(--accent); }
+nav.lesson-nav { display: flex; justify-content: space-between; margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-size: 0.9rem; }
+nav.lesson-nav a { color: var(--accent); text-decoration: none; }
+nav.lesson-nav a:hover { text-decoration: underline; }
+.ask-agent { margin-top: 3rem; padding: 1rem 1.2rem; border: 1px dashed var(--rule); border-radius: 6px; font-size: 0.9rem; color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e8e4da; --paper: #1c1b19; --rule: #3a382f; --accent: #e0784f; --muted: #9a9384; --code-bg: #262420; }
+  .quiz { background: #221f1a; }
+}
+</style>
+</head>
+<body>
+
+<h1>The Bastion &amp; IAM</h1>
+<p class="subtitle">What a bastion actually is, and how identity (IAM) lets it act — mapped to <code>bastion.tf</code>. Builds on <a href="0001-vpc-core-concepts.html">Lesson 1</a>.</p>
+
+<p>Lesson 1 built the network: a public subnet with a route to the internet, and two private subnets with none. A private subnet with no internet route is exactly where you'd put a database — nobody outside can reach it directly. But that raises a problem: how do <em>you</em> reach it, to run a migration or check a row?</p>
+
+<p>That's what a bastion is for.</p>
+
+<h2>1. Bastion host — a guarded doorway into the private network</h2>
+
+<p>A <strong>bastion host</strong> (also called a "jump box") is a single, deliberately minimal server that sits in a public subnet and acts as the one sanctioned entry point into the rest of the VPC. Instead of exposing your database to the internet, you expose one small, tightly-locked-down instance instead — and everything private gets reached <em>through</em> it, over the private network inside the VPC.</p>
+
+<div class="callout">
+<div class="callout-title">Why not just open the database's port to the internet?</div>
+<p>Every open port facing the internet is a thing that gets scanned and attacked within minutes of existing. A bastion shrinks your entire internet-facing attack surface down to one small, purpose-built box you can lock down hard — instead of every service having its own exposed door.</p>
+</div>
+
+<p>Your bastion lives in the <code>public</code> subnet from Lesson 1:</p>
+
+<pre><code>subnet_id                   = aws_subnet.public.id
+associate_public_ip_address = true</code></pre>
+
+<p>It needs to be reachable from outside (that's the whole point), so it sits where the internet route exists. A database in <code>private_a</code> has no such route — but the bastion, sitting inside the same VPC, can still reach it directly over the private 10.0.0.0/16 address space. The VPC's internal routing between subnets is automatic and always on; only the <em>internet</em> route is the special, opt-in part.</p>
+
+<h2>2. Security group — a stateful firewall glued to the instance</h2>
+
+<p>A <strong>security group</strong> is a virtual firewall attached directly to an instance (technically to its network interface). It's a set of allow-rules — nothing is permitted unless a rule says so. Unlike a route table (which controls where traffic <em>can go</em>), a security group controls what traffic is <em>allowed</em> to actually flow, in and out.</p>
+
+<pre><code>resource "aws_security_group" "bastion" {
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}</code></pre>
+
+<p>Notice what's missing: there's no <code>ingress</code> block at all. This security group allows <strong>all outbound</strong> traffic (ports 0-0 with protocol <code>-1</code> means "any port, any protocol") and <strong>zero inbound</strong> traffic. No SSH port 22, nothing. That looks broken for a bastion — how do you log into a box with no open inbound ports? Section 4 answers that.</p>
+
+<div class="callout">
+<div class="callout-title">Security group vs. route table — don't conflate these</div>
+<p>Route table: "can this traffic reach its destination at all?" (Lesson 1) Security group: "is this specific instance willing to accept/send this traffic?" A packet has to clear <em>both</em> to actually arrive. They're independent layers.</p>
+</div>
+
+<h2>3. IAM role — a set of permissions something can temporarily assume</h2>
+
+<p>Separate from networking entirely: how does the bastion get <em>permission</em> to do AWS things (like talk to the Systems Manager service)? That's <strong>IAM (Identity and Access Management)</strong>.</p>
+
+<p>An <strong>IAM role</strong> is a set of permissions that isn't permanently owned by anyone — it's <em>assumed</em> temporarily by whoever is trusted to assume it. Contrast with an IAM <em>user</em>, which is a permanent identity with its own long-lived credentials. A role has no credentials of its own; something else proves it's allowed to wear the role, then gets temporary access.</p>
+
+<pre><code>data "aws_iam_policy_document" "bastion_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "bastion" {
+  assume_role_policy = data.aws_iam_policy_document.bastion_assume.json
+}</code></pre>
+
+<p>This block is called a <strong>trust policy</strong>: it says "the EC2 service itself is allowed to assume this role." It's not about what the role can <em>do</em> yet — it's about who's allowed to <em>put on</em> the role in the first place. Here, that's any EC2 instance this role gets attached to.</p>
+
+<h2>4. Managed policy — what the role can actually do</h2>
+
+<pre><code>resource "aws_iam_role_policy_attachment" "bastion_ssm" {
+  role       = aws_iam_role.bastion.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}</code></pre>
+
+<p>Trusting who can assume a role (step 3) is separate from granting that role actual permissions. <code>AmazonSSMManagedInstanceCore</code> is an AWS-maintained <strong>managed policy</strong> — a pre-written bundle of permissions AWS keeps updated for you. This one grants exactly the permissions needed for the <strong>SSM (Systems Manager) Agent</strong> running on the instance to register itself and accept commands from AWS.</p>
+
+<p>This is the answer to the "no inbound ports" puzzle from section 2: instead of you connecting <em>in</em> to the bastion over SSH, the SSM agent on the bastion connects <em>out</em> to AWS's Systems Manager service. When you want a shell, you run <code>aws ssm start-session</code> — AWS relays your session to the agent over that outbound connection. No inbound port ever opens.</p>
+
+<h2>5. Instance profile — the wrapper EC2 actually attaches</h2>
+
+<pre><code>resource "aws_iam_instance_profile" "bastion" {
+  role = aws_iam_role.bastion.name
+}</code></pre>
+
+<p>This one's pure AWS plumbing, not a separate concept: an EC2 instance can't attach an IAM role directly — it attaches an <strong>instance profile</strong>, which is a thin wrapper holding exactly one role. Terraform makes this look like an extra resource; on the ground it's really just "the container that lets an EC2 instance carry a role."</p>
+
+<h2>6. AMI — the disk image the instance boots from</h2>
+
+<pre><code>data "aws_ami" "al2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-arm64"]
+  }
+}</code></pre>
+
+<p>An <strong>AMI (Amazon Machine Image)</strong> is a snapshot of a bootable disk — OS plus whatever's baked in. This isn't creating anything; it's a <em>lookup</em> ("find me the newest Amazon Linux 2023 image built for arm64 chips") so the instance always boots on a current, patched image without you hunting down an ID by hand.</p>
+
+<h2>Putting it together</h2>
+
+<div class="diagram">                    You, running: aws ssm start-session
+                              │
+                              ▼
+                    AWS Systems Manager (control plane)
+                              ▲
+                              │ outbound only — agent-initiated
+┌─────────────────────────────────────────────────────────┐
+│ VPC                                                       │
+│                                                             │
+│  public subnet (10.0.0.0/24)                               │
+│    ┌─────────────────────────┐                             │
+│    │ bastion instance          │ ← IAM role (via instance   │
+│    │ - security group:         │   profile) grants SSM      │
+│    │   no inbound, all outbound│   permissions               │
+│    └────────────┬───────────┘                             │
+│                 │ private VPC routing (always on)          │
+│                 ▼                                           │
+│  private_a / private_b subnets — e.g. a database here      │
+│  (reachable from the bastion, not from the internet)       │
+└─────────────────────────────────────────────────────────┘</div>
+
+<p>Four independent layers stack up to make this work: the <strong>network</strong> (which subnet, which route table — Lesson 1), the <strong>security group</strong> (which traffic is allowed to/from this instance), the <strong>IAM role</strong> (what AWS-API actions this instance is permitted to call), and the <strong>AMI</strong> (what's actually running on it). None of these substitute for each other — a hole in one doesn't get patched by the others.</p>
+
+<p class="source">Primary sources: <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html">EC2 Security Groups</a>, <a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html">SSM Session Manager</a>, <a href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html">IAM Roles</a>.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+<div class="quiz-q">Q1. Why does the bastion's security group have zero inbound rules, yet you can still get a shell on it?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">SSM connects outbound, not inbound.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q2. If you deleted the IAM role policy attachment but kept everything else, could you still reach the bastion via SSM?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No, agent loses required permissions.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q3. Could the bastion reach a database sitting in private_a, given everything in this lesson?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">Yes, private routing is always on.</div></details>
+</div>
+
+<div class="ask-agent">Fuzzy on trust policies vs. permissions, or want SSM connecting to the bastion demoed for real? Ask your agent.</div>
+
+<nav class="lesson-nav">
+<a href="0001-vpc-core-concepts.html">&larr; Lesson 1: VPC Core Concepts</a>
+<span>Next: rds.tf — how the database plugs into this (not yet written)</span>
+</nav>
+
+</body>
+</html>

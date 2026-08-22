@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 1: VPC Core Concepts</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+h1 { font-size: 2rem; margin-bottom: 0.2em; line-height: 1.2; }
+.subtitle { color: var(--muted); font-size: 1.05rem; margin-top: 0; margin-bottom: 2.5rem; font-style: italic; }
+h2 { font-size: 1.3rem; margin-top: 2.8rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.3rem; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--accent); }
+p { margin: 0.9em 0; }
+code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px; overflow-x: auto; line-height: 1.4; border-left: 3px solid var(--accent); }
+pre code { background: none; padding: 0; }
+blockquote { margin: 1.2em 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); font-style: italic; }
+.callout { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.9rem 1.2rem; border-radius: 0 6px 6px 0; margin: 1.5rem 0; }
+.callout-title { font-weight: bold; color: var(--accent); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; background: var(--code-bg); padding: 1.2rem; border-radius: 6px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+.quiz { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.4rem; margin: 1.2rem 0; }
+.quiz-q { font-weight: bold; margin-bottom: 0.6rem; }
+.quiz details summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+.quiz details { margin-top: 0.5rem; }
+.quiz details[open] summary { margin-bottom: 0.4rem; }
+.quiz-answer { background: var(--code-bg); padding: 0.6rem 0.9rem; border-radius: 4px; font-size: 0.92rem; }
+.source { font-size: 0.85rem; color: var(--muted); }
+.source a { color: var(--accent); }
+nav.lesson-nav { display: flex; justify-content: space-between; margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-size: 0.9rem; }
+nav.lesson-nav a { color: var(--accent); text-decoration: none; }
+nav.lesson-nav a:hover { text-decoration: underline; }
+.ask-agent { margin-top: 3rem; padding: 1rem 1.2rem; border: 1px dashed var(--rule); border-radius: 6px; font-size: 0.9rem; color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e8e4da; --paper: #1c1b19; --rule: #3a382f; --accent: #e0784f; --muted: #9a9384; --code-bg: #262420; }
+  .quiz { background: #221f1a; }
+}
+</style>
+</head>
+<body>
+
+<h1>VPC Core Concepts</h1>
+<p class="subtitle">The raw AWS networking ideas behind your <code>steam-infra</code> network.tf — no Terraform, just the concepts.</p>
+
+<p>Your Terraform builds six things. Each one is a real AWS concept that exists whether or not Terraform is in the picture. Here's what each one <em>is</em>, stripped of syntax.</p>
+
+<h2>1. VPC — your own private network inside AWS</h2>
+
+<p>A <strong>VPC (Virtual Private Cloud)</strong> is an isolated slice of network space that belongs only to you. Nobody else's AWS resources can see into it unless you explicitly connect them. Think of it as your own private building — AWS owns the land (the region), the building and everything in it is yours.</p>
+
+<p>A VPC is defined by an IP address range, written in <strong>CIDR notation</strong>:</p>
+
+<pre><code>cidr_block = "10.0.0.0/16"</code></pre>
+
+<div class="callout">
+<div class="callout-title">CIDR, decoded</div>
+<p><code>10.0.0.0/16</code> means: the first 16 bits of the address are fixed (<code>10.0</code>), the remaining 16 bits are yours to allocate. That's 2<sup>16</sup> = <strong>65,536 IP addresses</strong> available inside this VPC.</p>
+<p><code>10.0.0.0/24</code> (used later for a subnet) fixes 24 bits, leaving 8 bits free = <strong>256 addresses</strong>.</p>
+<p>Smaller number after the slash = bigger range. Backwards from what most people guess first.</p>
+</div>
+
+<p><code>10.0.0.0/16</code> falls inside <a href="https://www.rfc-editor.org/rfc/rfc1918">RFC 1918</a> private address space — not routable on the public internet, by design. Nothing outside your VPC can reach these addresses directly, regardless of any gateway you attach.</p>
+
+<p>The two DNS flags just turn on Amazon's internal DNS resolver inside the VPC and let instances get hostnames — housekeeping, not core to the network shape.</p>
+
+<h2>2. Availability Zones — physically separate datacenters</h2>
+
+<p>Before subnets make sense: an <strong>Availability Zone (AZ)</strong> — like <code>us-east-1a</code> — is a physically distinct datacenter (or cluster of them) within an AWS region, with its own power, cooling, network. AZs in the same region are close enough for fast, cheap connections between them, but far enough apart that one catching fire doesn't take out the other.</p>
+
+<p>This is why your Terraform has <code>private_a</code> in <code>us-east-1a</code> and <code>private_b</code> in <code>us-east-1b</code>: fault isolation. If one datacenter has a bad day, the other keeps running.</p>
+
+<h2>3. Subnets — slices of the VPC, pinned to one AZ</h2>
+
+<p>A <strong>subnet</strong> is a sub-range carved out of the VPC's IP space, and — this is the part that trips people up — <strong>every subnet lives in exactly one Availability Zone.</strong> You can't spread a single subnet across two AZs. "High availability across AZs" always means "more than one subnet."</p>
+
+<div class="diagram">VPC  10.0.0.0/16   (65,536 addresses, spans the whole region)
+│
+├── public       10.0.0.0/24   us-east-1a   (256 addresses)
+├── private_a    10.0.1.0/24   us-east-1a   (256 addresses)
+└── private_b    10.0.2.0/24   us-east-1b   (256 addresses)</div>
+
+<p>Nothing about a subnet's name makes it "public" or "private" — that word in your resource name (<code>aws_subnet.public</code>) is just a label you chose. What actually determines public vs. private is section 5 below.</p>
+
+<h2>4. Internet Gateway — the door to the internet</h2>
+
+<p>An <strong>Internet Gateway (IGW)</strong> is a horizontally-scaled, AWS-managed component attached to your VPC that does exactly one job: give traffic a path in and out of the public internet. No IGW attached, no VPC resource can ever talk to the internet, full stop — no matter what else is configured.</p>
+
+<pre><code>resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+}</code></pre>
+
+<p>Attaching an IGW doesn't automatically expose anything. It just makes the internet <em>reachable</em> — something else has to point traffic at it. That's the route table's job.</p>
+
+<h2>5. Route tables — the actual definition of "public"</h2>
+
+<p>A <strong>route table</strong> is a list of rules: "traffic headed to <em>this</em> destination goes out <em>that</em> door." Every subnet is associated with exactly one route table, and that table decides where the subnet's outbound traffic can go.</p>
+
+<pre><code>route {
+  cidr_block = "0.0.0.0/0"
+  gateway_id = aws_internet_gateway.gw.id
+}</code></pre>
+
+<p><code>0.0.0.0/0</code> means "any destination not otherwise matched" — i.e. the internet. This rule says: anything leaving this subnet that isn't destined for somewhere else inside the VPC, send it out through the Internet Gateway.</p>
+
+<div class="callout">
+<div class="callout-title">This is the actual public/private boundary</div>
+<p>A subnet is "public" purely because its route table has a <code>0.0.0.0/0 → igw</code> route. <code>private_a</code> and <code>private_b</code> have no route table of their own defined here, so they fall back to the VPC's default ("main") route table — which has no route to the internet. That's the entire mechanism. Nothing else makes a subnet public.</p>
+</div>
+
+<p>The <code>map_public_ip_on_launch = true</code> flag on the public subnet is a separate, complementary setting — it auto-assigns a public IP to any instance launched there. Without a route to an IGW, that public IP would be useless. With it, the instance is actually reachable.</p>
+
+<h2>6. Route table association — wiring the subnet to the table</h2>
+
+<pre><code>resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}</code></pre>
+
+<p>This is the explicit link. A VPC always has an implicit <strong>main route table</strong> that every subnet uses by default (no internet route, private by default). This association overrides that default for the <code>public</code> subnet only, pointing it at the custom route table with the IGW rule instead. <code>private_a</code> and <code>private_b</code> have no association, so they silently stay on the private-by-default main table.</p>
+
+<h2>Putting it together</h2>
+
+<div class="diagram">Internet
+   │
+   ▼
+Internet Gateway (gw)
+   │
+   ▼  (only via a route table entry)
+┌─────────────────────────────────────────────┐
+│ VPC  10.0.0.0/16                             │
+│                                               │
+│  public subnet (10.0.0.0/24, us-east-1a)     │
+│    └─ route table: 0.0.0.0/0 → gw  (explicit)│
+│                                               │
+│  private_a (10.0.1.0/24, us-east-1a)         │
+│    └─ main route table (no internet route)   │
+│                                               │
+│  private_b (10.0.2.0/24, us-east-1b)         │
+│    └─ main route table (no internet route)   │
+└─────────────────────────────────────────────┘</div>
+
+<p class="source">Primary sources: <a href="https://docs.aws.amazon.com/vpc/latest/userguide/what-is-amazon-vpc.html">AWS VPC User Guide — What is Amazon VPC?</a>, <a href="https://docs.aws.amazon.com/vpc/latest/userguide/VPC_Route_Tables.html">Route tables for your VPC</a>. Read these for the authoritative version — this lesson is a compressed map, not a replacement.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+<div class="quiz-q">Q1. If you deleted the route_table_association for "public" but left everything else, would instances in that subnet still reach the internet?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No, it falls back to the main table.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q2. Could private_a and private_b share one single subnet instead of two?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No, one subnet spans one zone.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q3. What actually makes the "public" subnet public, in one phrase?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">Its route table has an internet route.</div></details>
+</div>
+
+<div class="ask-agent">Stuck on any of this, or want it mapped onto a different part of <code>steam-infra</code> (bastion.tf, rds.tf)? Ask your agent — that's what it's there for.</div>
+
+<nav class="lesson-nav">
+<span></span>
+<a href="0002-bastion-and-iam.html">Next: Lesson 2 — The Bastion &amp; IAM &rarr;</a>
+</nav>
+</body>
+</html>
