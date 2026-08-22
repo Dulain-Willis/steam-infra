@@ -41,8 +41,11 @@ resource "aws_instance" "generator" {
   # ponytail: builds the image on-box from source inlined into user_data
   # (no registry, no image versioning, full docker build on every boot).
   # Revisit with an ECR image + pull-on-boot if generator code outgrows
-  # the reboot-to-deploy cycle. See #19.
-  user_data = templatefile("${path.module}/generator_user_data.sh.tpl", {
+  # the reboot-to-deploy cycle. See #19. gzip'd because plaintext source
+  # blew past EC2's 16KB user_data cap once dirty.py was added; cloud-init
+  # auto-decompresses gzip user_data, so this buys headroom without
+  # restructuring the inline-source mechanism itself.
+  user_data_base64 = base64gzip(templatefile("${path.module}/generator_user_data.sh.tpl", {
     dockerfile       = file("${path.module}/../generator/Dockerfile")
     requirements     = file("${path.module}/../generator/requirements.txt")
     generator_py     = file("${path.module}/../generator/generator.py")
