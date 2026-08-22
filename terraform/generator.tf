@@ -41,8 +41,11 @@ resource "aws_instance" "generator" {
   # ponytail: builds the image on-box from source inlined into user_data
   # (no registry, no image versioning, full docker build on every boot).
   # Revisit with an ECR image + pull-on-boot if generator code outgrows
-  # the reboot-to-deploy cycle. See #19.
-  user_data = templatefile("${path.module}/generator_user_data.sh.tpl", {
+  # the reboot-to-deploy cycle. See #19. gzip'd because plaintext source
+  # blew past EC2's 16KB user_data cap once dirty.py was added; cloud-init
+  # auto-decompresses gzip user_data, so this buys headroom without
+  # restructuring the inline-source mechanism itself.
+  user_data_base64 = base64gzip(templatefile("${path.module}/generator_user_data.sh.tpl", {
     dockerfile       = file("${path.module}/../generator/Dockerfile")
     requirements     = file("${path.module}/../generator/requirements.txt")
     generator_py     = file("${path.module}/../generator/generator.py")
@@ -52,9 +55,12 @@ resource "aws_instance" "generator" {
     db_name          = aws_db_instance.main.db_name
     db_user          = aws_db_instance.main.username
     db_password      = random_password.db.result
-    tick_min_seconds = "5"
-    tick_max_seconds = "15"
-  })
+    # Calibrated (#16) to land combined event-table throughput at ~1-3
+    # events/sec against the seeded 50k-user/3k-game catalog. See
+    # docs/generator-runbook.md for the measured run.
+    tick_min_seconds = "1"
+    tick_max_seconds = "2"
+  }))
 
   tags = {
     Name = "steam-infra-generator"
