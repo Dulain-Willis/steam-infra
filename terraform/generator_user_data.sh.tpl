@@ -18,6 +18,10 @@ cat > /opt/generator/generator.py <<'GENERATOR_EOF'
 ${generator_py}
 GENERATOR_EOF
 
+cat > /opt/generator/dirty.py <<'DIRTY_EOF'
+${dirty_py}
+DIRTY_EOF
+
 docker build -t steam-generator /opt/generator
 
 docker run -d \
