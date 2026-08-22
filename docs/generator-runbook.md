@@ -1,5 +1,10 @@
 # Generator runbook
 
+First-time / from-scratch bring-up (RDS + schema + seed + generator, in the
+order that avoids the crash-loop below) is `./scripts/bootstrap.sh` — see
+`docs/rds-bootstrap.md`. Everything past this point assumes that's already
+been run at least once.
+
 The generator EC2 instance runs a Docker container that ticks against
 Postgres over the private VPC on a jittered interval, picking an event
 type by weight and writing the corresponding rows. Registered event types:
@@ -113,3 +118,12 @@ introduced.
 
 The container is built and started by user data on first boot — allow a
 minute or two for `dnf install docker` + `docker build` before logs appear.
+
+If the generator instance is created in the same `tofu apply` as a fresh
+RDS instance (rather than after schema/seed already exist, as
+`scripts/bootstrap.sh` orders it), it starts ticking against empty
+`users`/`games` tables — `purchase`/`playtime_session`/etc ticks throw on
+the empty `select ... order by random() limit 1` and the container
+crash-loops (`--restart unless-stopped` keeps retrying) until seed data
+lands. Self-healing, but noisy. Use the script, or apply RDS+seed before
+the generator exists, to avoid it.

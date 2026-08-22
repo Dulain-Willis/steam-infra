@@ -2,6 +2,19 @@
 
 Run after every `tofu apply` from a clean state (i.e. after `tofu destroy`). The schema is not applied automatically — this is the manual step.
 
+## Automated (recommended)
+
+```bash
+./scripts/bootstrap.sh
+```
+
+Runs the whole flow below end to end: applies RDS + bastion first, opens
+the SSM tunnel, applies `db/schema.sql`, runs `generator/seed.py`, closes
+the tunnel, then applies the generator instance *last* — so it never boots
+against an empty database. See `docs/generator-runbook.md` for why that
+ordering matters. Use the manual steps below to debug a stuck tunnel or
+rerun a single piece by hand.
+
 ## 1. Provision
 
 ```bash
