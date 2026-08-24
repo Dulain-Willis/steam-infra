@@ -45,6 +45,40 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+resource "aws_subnet" "eks_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.10.0/24"
+  availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                     = "steam-infra-eks-a"
+    "kubernetes.io/role/elb" = "1"
+  }
+}
+
+resource "aws_subnet" "eks_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.11.0/24"
+  availability_zone       = "us-east-1b"
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name                     = "steam-infra-eks-b"
+    "kubernetes.io/role/elb" = "1"
+  }
+}
+
+resource "aws_route_table_association" "eks_a" {
+  subnet_id      = aws_subnet.eks_a.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "eks_b" {
+  subnet_id      = aws_subnet.eks_b.id
+  route_table_id = aws_route_table.public.id
+}
+
 resource "aws_subnet" "private_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.1.0/24"
