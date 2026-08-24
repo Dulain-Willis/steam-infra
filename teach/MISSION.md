@@ -15,4 +15,3 @@ Building real AWS infra for `steam-infra` in Terraform, but lost track of what t
 
 ## Out of scope
 - Terraform language mechanics (state, modules, providers) — separate topic if it comes up.
-- RDS internals — deferred until the bastion/security-group/IAM lesson lands (rds.tf exists in the repo, next after bastion.tf).

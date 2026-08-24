@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 3: RDS &amp; the SSM Tunnel</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+h1 { font-size: 2rem; margin-bottom: 0.2em; line-height: 1.2; }
+.subtitle { color: var(--muted); font-size: 1.05rem; margin-top: 0; margin-bottom: 2.5rem; font-style: italic; }
+h2 { font-size: 1.3rem; margin-top: 2.8rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.3rem; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--accent); }
+p { margin: 0.9em 0; }
+code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px; overflow-x: auto; line-height: 1.4; border-left: 3px solid var(--accent); }
+pre code { background: none; padding: 0; }
+blockquote { margin: 1.2em 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); font-style: italic; }
+.callout { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.9rem 1.2rem; border-radius: 0 6px 6px 0; margin: 1.5rem 0; }
+.callout-title { font-weight: bold; color: var(--accent); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; background: var(--code-bg); padding: 1.2rem; border-radius: 6px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+.quiz { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.4rem; margin: 1.2rem 0; }
+.quiz-q { font-weight: bold; margin-bottom: 0.6rem; }
+.quiz details summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+.quiz details { margin-top: 0.5rem; }
+.quiz details[open] summary { margin-bottom: 0.4rem; }
+.quiz-answer { background: var(--code-bg); padding: 0.6rem 0.9rem; border-radius: 4px; font-size: 0.92rem; }
+.source { font-size: 0.85rem; color: var(--muted); }
+.source a { color: var(--accent); }
+nav.lesson-nav { display: flex; justify-content: space-between; margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-size: 0.9rem; }
+nav.lesson-nav a { color: var(--accent); text-decoration: none; }
+nav.lesson-nav a:hover { text-decoration: underline; }
+.ask-agent { margin-top: 3rem; padding: 1rem 1.2rem; border: 1px dashed var(--rule); border-radius: 6px; font-size: 0.9rem; color: var(--muted); }
+@media print {
+  body { max-width: 100%; }
+  .ask-agent { display: none; }
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e8e4da; --paper: #1c1b19; --rule: #3a382f; --accent: #e0784f; --muted: #9a9384; --code-bg: #262420; }
+  .quiz { background: #221f1a; }
+}
+</style>
+</head>
+<body>
+
+<h1>RDS &amp; the SSM Tunnel</h1>
+<p class="subtitle">Why <code>psql</code> can't reach the database directly, and what that <code>aws ssm start-session ... PortForwarding</code> command in <code>docs/rds-bootstrap.md</code> is actually doing. Builds on <a href="0002-bastion-and-iam.html">Lesson 2</a>.</p>
+
+<p>Quick recap of where the first two lessons left you, because this lesson leans on all of it: a VPC is one private address space, split into subnets. A subnet is "public" only if its route table sends <code>0.0.0.0/0</code> traffic to an internet gateway — otherwise it's private and unreachable from outside (Lesson 1). The bastion sits in the public subnet, has no inbound ports open at all, and you still reach it because its SSM agent makes an <em>outbound</em> connection to AWS, which relays your session in (Lesson 2). This lesson is about the last hop: from that bastion shell to an actual Postgres database sitting in a private subnet — and why the real command you run isn't a shell session at all.</p>
+
+<h2>1. RDS instance — a database AWS runs for you</h2>
+
+<p><strong>RDS (Relational Database Service)</strong> is AWS operating a database engine (here, Postgres) on your behalf — patching, backups, storage all handled — while you still get a normal Postgres endpoint to connect to. In <code>rds.tf</code>:</p>
+
+<pre><code>resource "aws_db_instance" "main" {
+  engine               = "postgres"
+  db_subnet_group_name = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  publicly_accessible  = false
+}</code></pre>
+
+<p><code>publicly_accessible = false</code> is the headline: this database gets no public IP, full stop. That's not paranoia — a database is exactly the kind of thing a bastion exists to protect (Lesson 2, "why not just open the database's port to the internet?").</p>
+
+<h3>DB subnet group — which subnets RDS is allowed to live in</h3>
+
+<pre><code>resource "aws_db_subnet_group" "main" {
+  subnet_ids = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+}</code></pre>
+
+<p>RDS doesn't let you point it at one specific subnet — you hand it a <em>group</em> of subnets (here, both private ones, in different Availability Zones per Lesson 1) and AWS places the instance in one of them, keeping the option to fail over to another AZ later. Both are private: no route to an internet gateway, so nothing about this changes the "no public IP" story.</p>
+
+<h2>2. RDS's security group — this is the new piece</h2>
+
+<pre><code>resource "aws_security_group_rule" "rds_from_bastion" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.rds.id
+  source_security_group_id = aws_security_group.bastion.id
+}</code></pre>
+
+<p>Lesson 2's bastion security group had plain CIDR blocks (<code>0.0.0.0/0</code> for egress). This rule is different: instead of "allow traffic from this IP range," it says <strong>"allow traffic from anything wearing the bastion's security group."</strong> <code>source_security_group_id</code> doesn't care what subnet the bastion is in or what its IP is — it's an identity check, not a location check. If the bastion gets replaced tomorrow with a new IP address, this rule still works unchanged, because it's still the same security group attached.</p>
+
+<div class="callout">
+<div class="callout-title">Two locks on the same door</div>
+<p>Port 5432 (Postgres) is only reachable by things carrying the bastion's security group <em>or</em> the generator's (see <code>rds_from_generator</code> — same pattern, different source). Every other source, including your laptop's IP, is refused before a single byte of Postgres protocol is exchanged. This is enforced by AWS's network layer, before it ever reaches the database.</p>
+</div>
+
+<h2>3. The actual problem: your laptop isn't in the VPC</h2>
+
+<p>Put the last two lessons together and a puzzle appears. The bastion can reach RDS — it's in the VPC, private routing between subnets is always on (Lesson 2), and the security group allows it. But <em>you</em>, running <code>psql</code> on your laptop, are not in the VPC. You have no route to 10.0.0.0/16 at all — your laptop doesn't even know that address space exists. Getting an SSM shell <em>on</em> the bastion (Lesson 2) would let you run <code>psql</code> from inside it — but that means installing a Postgres client on a box meant to stay minimal, every time. There's a better way: make the bastion carry your bytes for you, without you ever getting a shell on it.</p>
+
+<h2>4. SSM port forwarding — a tunnel, not a shell</h2>
+
+<p>Lesson 2 covered one SSM document: <code>AWS-StartInteractiveCommand</code>-style shell sessions. There's a second one, <code>AWS-StartPortForwardingSessionToRemoteHost</code>, and it's the one <code>docs/rds-bootstrap.md</code> actually uses:</p>
+
+<pre><code>aws ssm start-session \
+  --target "$INSTANCE_ID" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters '{"host":["'"$RDS_HOST"'"],"portNumber":["5432"],"localPortNumber":["15432"]}'</code></pre>
+
+<p>This doesn't give you a shell on the bastion at all. Instead it opens a local port on <em>your</em> machine (<code>15432</code>) and pipes anything sent to it, through the same outbound SSM control channel from Lesson 2, to the bastion, which forwards it onward to <code>$RDS_HOST:5432</code>. The bastion is acting purely as a relay — it never runs <code>psql</code>, never sees your query, doesn't even need Postgres installed. It's just proving, via its security group membership, that it's allowed to speak to port 5432 on that host — and lending you that permission for the duration of the tunnel.</p>
+
+<div class="callout">
+<div class="callout-title">Why this, and not just SSH port forwarding?</div>
+<p>Same "no inbound ports" property as Lesson 2's shell session: the tunnel rides the SSM agent's existing outbound connection. No SSH key to manage, no port 22 to open on the bastion, and every session is logged and IAM-governed like any other SSM action.</p>
+</div>
+
+<p>Once that's running (you'll see <code>Waiting for connections...</code>), <code>localhost:15432</code> on your laptop <em>is</em>, for practical purposes, a direct line to the database:</p>
+
+<pre><code>psql -h localhost -p 15432 -U steam_proj_admin -d steam</code></pre>
+
+<p><code>psql</code> has no idea a tunnel exists. It thinks it's talking to a normal Postgres server on <code>localhost</code>. Everything past that command — the private routing, the security group check, the relay through the bastion — is invisible to it.</p>
+
+<h2>Putting the whole path together</h2>
+
+<div class="diagram">  your laptop                                    AWS
+  ┌──────────────┐   outbound SSM channel   ┌─────────────────────┐
+  │ psql          │──────────────────────────▶│ Systems Manager      │
+  │ → localhost:  │   (Lesson 2's agent      │ (control plane)      │
+  │   15432       │    connection, reused)   └──────────┬───────────┘
+  └──────────────┘                                       │ relays to bastion
+                                                            ▼
+  ┌───────────────────────── VPC ─────────────────────────────────┐
+  │ public subnet                                                   │
+  │  ┌─────────────┐  security group: bastion → allowed on 5432     │
+  │  │ bastion       │  (identity-based rule, Section 2)             │
+  │  │ (pure relay,  │                                               │
+  │  │  no psql)     │                                               │
+  │  └──────┬───────┘  private VPC routing (always on, Lesson 2)     │
+  │          ▼                                                       │
+  │  private_a / private_b                                          │
+  │  ┌─────────────┐                                                 │
+  │  │ RDS Postgres  │  publicly_accessible = false                  │
+  │  │ port 5432     │  reachable only from bastion + generator SGs  │
+  │  └─────────────┘                                                 │
+  └───────────────────────────────────────────────────────────────┘</div>
+
+<p>Three independent layers had to line up for that one <code>psql</code> command to work: the <strong>network</strong> (RDS lives in a private subnet reachable from the bastion via always-on VPC routing), the <strong>security group</strong> (an identity-based rule naming the bastion's SG, not an IP range), and the <strong>tunnel</strong> (SSM port forwarding, riding the same outbound-only agent connection from Lesson 2, so your laptop never needs a route into the VPC at all).</p>
+
+<p class="source">Primary sources: <a href="https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.RDSFeatures.html">Amazon RDS overview</a>, <a href="https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-port-forwarding.html">SSM Session Manager — port forwarding</a>, <a href="https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-security-groups.html">EC2 Security Groups — referencing another security group as a source</a>.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+<div class="quiz-q">Q1. Why does <code>rds_from_bastion</code> use <code>source_security_group_id</code> instead of a CIDR block?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">Identity-based, survives IP changes.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q2. When the tunnel is open and you run <code>psql -h localhost -p 15432</code>, does the bastion ever run Postgres client code?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No, it only relays raw bytes.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q3. Could you skip the bastion and point <code>psql</code> straight at the RDS endpoint from your laptop?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No, not public and no route.</div></details>
+</div>
+
+<div class="ask-agent">Fuzzy on why the tunnel needs a local port at all, or want the tunnel opened for real against <code>steam-infra</code> so you can watch <code>Waiting for connections...</code> appear? Ask your agent.</div>
+
+<nav class="lesson-nav">
+<a href="0002-bastion-and-iam.html">&larr; Lesson 2: The Bastion &amp; IAM</a>
+<span>Next: not yet written</span>
+</nav>
+
+</body>
+</html>

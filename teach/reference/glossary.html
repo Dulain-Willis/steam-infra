@@ -91,5 +91,17 @@ code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; ba
 
 <h3>AMI (Amazon Machine Image)</h3>
 <p>A bootable disk snapshot — OS plus whatever's baked in — that an EC2 instance launches from.</p>
+
+<h3>RDS (Relational Database Service)</h3>
+<p>AWS-managed database engine (e.g. Postgres) — AWS handles patching/backups/storage, you get a normal DB endpoint.</p>
+
+<h3>DB subnet group</h3>
+<p>A set of subnets (spanning AZs) RDS is allowed to place its instance in — you don't pick one subnet directly.</p>
+
+<h3>source_security_group_id</h3>
+<p>Security group rule source that names <em>another security group</em> instead of a CIDR block — an identity check ("anything wearing SG X"), not a location check. Survives the source's IP changing.</p>
+
+<h3>SSM port forwarding</h3>
+<p>SSM Session Manager document (<code>AWS-StartPortForwardingSessionToRemoteHost</code>) that tunnels a local port to a remote host through an instance, over the same outbound agent connection as a shell session — the instance relays bytes, it doesn't run the client.</p>
 </body>
 </html>
