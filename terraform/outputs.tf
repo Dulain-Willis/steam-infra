@@ -14,3 +14,11 @@ output "db_password" {
   value     = random_password.db.result
   sensitive = true
 }
+
+output "eks_cluster_name" {
+  value = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  value = module.eks.cluster_endpoint
+}
