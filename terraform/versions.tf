@@ -8,11 +8,30 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.15"
+    }
   }
-  
+
   required_version = ">= 1.12"
 }
 
 provider "aws" {
   region = var.aws_region
+}
+
+# Auth via exec + aws eks get-token instead of aws_eks_cluster_auth so the
+# token is fetched fresh at apply time, not cached from plan (it's short-lived).
+provider "helm" {
+  kubernetes {
+    host                   = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
+
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+    }
+  }
 }
