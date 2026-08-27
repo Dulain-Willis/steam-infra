@@ -22,3 +22,7 @@ output "eks_cluster_name" {
 output "eks_cluster_endpoint" {
   value = module.eks.cluster_endpoint
 }
+
+output "kafka_connect_ecr_repository_url" {
+  value = aws_ecr_repository.kafka_connect.repository_url
+}
