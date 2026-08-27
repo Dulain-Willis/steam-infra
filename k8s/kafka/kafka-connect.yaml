@@ -1,0 +1,58 @@
+# Kafka Connect via Strimzi's spec.build, producing a plugin image with the
+# Debezium Postgres connector and Snowflake's Kafka connector baked in — no
+# hand-built custom image (#42, per #32's locked decision).
+#
+# Applied via kubectl, not Terraform (IaC boundary #28). Requires:
+#   - the Strimzi operator already running in the `kafka` namespace
+#     (terraform/strimzi.tf)
+#   - the `steam-infra` Kafka cluster already up (kafka-cluster.yaml, #41)
+#   - the ECR repo from terraform/ecr.tf (`tofu output
+#     kafka_connect_ecr_repository_url`)
+#   - a `docker-registry` Secret named `ecr-registry-credentials` in the
+#     `kafka` namespace so the in-cluster build pod can push to ECR. ECR
+#     login tokens expire after 12h, so this is regenerated per session
+#     rather than stored in git:
+#
+#       kubectl create secret docker-registry ecr-registry-credentials -n kafka \
+#         --docker-server=<account-id>.dkr.ecr.us-east-1.amazonaws.com \
+#         --docker-username=AWS \
+#         --docker-password="$(aws ecr get-login-password --region us-east-1)"
+#
+# Runs on the system node pool (no affinity/toleration needed) — only the
+# Kafka brokers themselves are pinned to the dedicated On-Demand pool (#37).
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnect
+metadata:
+  name: steam-infra
+  namespace: kafka
+  annotations:
+    # Not used yet (connector CRs come in a later issue) but required for
+    # KafkaConnector CRs to ever take effect against this cluster.
+    strimzi.io/use-connector-resources: "true"
+spec:
+  version: 4.3.1
+  replicas: 1
+  bootstrapServers: steam-infra-kafka-bootstrap:9092
+  groupId: steam-infra-connect
+  offsetStorageTopic: connect-cluster-offsets
+  configStorageTopic: connect-cluster-configs
+  statusStorageTopic: connect-cluster-status
+  config:
+    offset.storage.replication.factor: 3
+    config.storage.replication.factor: 3
+    status.storage.replication.factor: 3
+  build:
+    output:
+      type: docker
+      # Replace <account-id> with `tofu output kafka_connect_ecr_repository_url`.
+      image: <account-id>.dkr.ecr.us-east-1.amazonaws.com/steam-infra-kafka-connect:latest
+      pushSecret: ecr-registry-credentials
+    plugins:
+      - name: debezium-postgres-connector
+        artifacts:
+          - type: tgz
+            url: https://repo1.maven.org/maven2/io/debezium/debezium-connector-postgres/3.6.1.Final/debezium-connector-postgres-3.6.1.Final-plugin.tar.gz
+      - name: snowflake-kafka-connector
+        artifacts:
+          - type: jar
+            url: https://repo1.maven.org/maven2/com/snowflake/snowflake-kafka-connector/4.1.0/snowflake-kafka-connector-4.1.0.jar
