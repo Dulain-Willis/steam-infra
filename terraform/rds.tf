@@ -92,3 +92,15 @@ resource "aws_security_group_rule" "rds_from_generator" {
   source_security_group_id = aws_security_group.generator.id
   description              = "Postgres from the generator"
 }
+
+# Debezium connector (#44) runs as a pod on the EKS node group and needs a
+# direct path to RDS, same as the bastion/generator above.
+resource "aws_security_group_rule" "rds_from_eks_nodes" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.rds.id
+  source_security_group_id = module.eks.node_security_group_id
+  description              = "Postgres from EKS nodes (Debezium connector)"
+}
