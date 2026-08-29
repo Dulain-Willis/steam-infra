@@ -1,8 +1,9 @@
 # Snowflake sink connector consuming Debezium's topics directly (#45, per
-# #34's locked decision) — no S3 or other intermediate landing zone. Uses
-# Snowflake's free/open-source Kafka connector in its default Snowpipe
-# (buffered, serverless) mode, not Snowpipe Streaming — no warehouse needed
-# for loading. Applied via kubectl, not Terraform (IaC boundary #28).
+# #34's locked decision) — no S3 or other intermediate landing zone. The
+# 4.1.0 connector jar built into the plugin image (#42) only ships the
+# Snowpipe Streaming variant (SnowflakeStreamingSinkConnector), not the
+# classic buffered SnowflakeSinkConnector — still serverless, no warehouse
+# needed for loading. Applied via kubectl, not Terraform (IaC boundary #28).
 #
 # Requires:
 #   - Kafka Connect running with the snowflake-kafka-connector plugin built
@@ -25,7 +26,7 @@ metadata:
   labels:
     strimzi.io/cluster: steam-infra
 spec:
-  class: com.snowflake.kafka.connector.SnowflakeSinkConnector
+  class: com.snowflake.kafka.connector.SnowflakeStreamingSinkConnector
   tasksMax: 1
   config:
     topics: >-
@@ -48,6 +49,13 @@ spec:
     snowflake.private.key: "${secrets:kafka/snowflake-keypair:private_key}"
     snowflake.database.name: STEAM_PROJECT
     snowflake.schema.name: PUBLIC
+    snowflake.role.name: ACCOUNTADMIN
+    # Fresh KC v4 setup, not migrating from a classic/v3 connector — skip its
+    # v3-compatibility checks instead of setting every flag they ask for.
+    snowflake.streaming.validate.compatibility.with.classic: "false"
+    # Land raw JSON (RECORD_METADATA/RECORD_CONTENT) rather than mapping CDC
+    # fields to columns — no dbt/transform layer yet to consume typed columns.
+    snowflake.enable.schematization: "false"
     key.converter: org.apache.kafka.connect.storage.StringConverter
-    value.converter: com.snowflake.kafka.connector.records.SnowflakeJsonConverter
+    value.converter: org.apache.kafka.connect.json.JsonConverter
     value.converter.schemas.enable: "false"
