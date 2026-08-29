@@ -103,5 +103,23 @@ code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; ba
 
 <h3>SSM port forwarding</h3>
 <p>SSM Session Manager document (<code>AWS-StartPortForwardingSessionToRemoteHost</code>) that tunnels a local port to a remote host through an instance, over the same outbound agent connection as a shell session — the instance relays bytes, it doesn't run the client.</p>
+
+<h3>EKS (Elastic Kubernetes Service)</h3>
+<p>AWS-managed Kubernetes control plane. You still bring your own worker nodes (or let a managed node group do it) — AWS operates the API server and etcd.</p>
+
+<h3>EKS managed node group</h3>
+<p>A pool of EC2 instances AWS provisions and auto-joins to an EKS cluster, kept at a desired count. See <a href="../lessons/0004-eks-cluster-and-node-groups.html">Lesson 4</a>.</p>
+
+<h3>Taint</h3>
+<p>A marker on a node that repels pods by default. A pod is only allowed to schedule there if it carries a matching <em>toleration</em>. Answers "who's allowed on me?"</p>
+
+<h3>Toleration</h3>
+<p>A clause in a pod spec that lets it schedule onto a node bearing a specific taint. Without one, a taint blocks the pod outright.</p>
+
+<h3>Node label (Kubernetes)</h3>
+<p>Descriptive key/value metadata on a node. On its own does nothing — a pod opts in via <code>nodeSelector</code>/affinity. Answers "where do I want to go?", the opposite job of a taint.</p>
+
+<h3><code>kubernetes.io/role/elb</code></h3>
+<p>Subnet tag convention (not an AWS mechanism) that the AWS Load Balancer Controller scans for when auto-discovering which subnets it may place a public-facing load balancer into. Internal equivalent: <code>kubernetes.io/role/internal-elb</code>.</p>
 </body>
 </html>

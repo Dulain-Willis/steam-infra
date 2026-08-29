@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lesson 4: EKS Cluster &amp; Node Groups</title>
+<style>
+:root {
+  --ink: #1a1a1a;
+  --paper: #fdfcfa;
+  --rule: #d8d3c8;
+  --accent: #a6432d;
+  --muted: #6b6459;
+  --code-bg: #f2efe8;
+  --good: #2c6e49;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  max-width: 42em;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 6rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 19px;
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--paper);
+}
+h1 { font-size: 2rem; margin-bottom: 0.2em; line-height: 1.2; }
+.subtitle { color: var(--muted); font-size: 1.05rem; margin-top: 0; margin-bottom: 2.5rem; font-style: italic; }
+h2 { font-size: 1.3rem; margin-top: 2.8rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.3rem; }
+h3 { font-size: 1.05rem; margin-top: 1.8rem; color: var(--accent); }
+p { margin: 0.9em 0; }
+code, pre { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85em; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+pre { background: var(--code-bg); padding: 1rem 1.2rem; border-radius: 6px; overflow-x: auto; line-height: 1.4; border-left: 3px solid var(--accent); }
+pre code { background: none; padding: 0; }
+blockquote { margin: 1.2em 0; padding-left: 1rem; border-left: 3px solid var(--rule); color: var(--muted); font-style: italic; }
+.callout { background: var(--code-bg); border-left: 3px solid var(--accent); padding: 0.9rem 1.2rem; border-radius: 0 6px 6px 0; margin: 1.5rem 0; }
+.callout-title { font-weight: bold; color: var(--accent); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.diagram { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.82rem; background: var(--code-bg); padding: 1.2rem; border-radius: 6px; white-space: pre; overflow-x: auto; line-height: 1.5; }
+.quiz { background: #fff; border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.4rem; margin: 1.2rem 0; }
+.quiz-q { font-weight: bold; margin-bottom: 0.6rem; }
+.quiz details summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+.quiz details { margin-top: 0.5rem; }
+.quiz details[open] summary { margin-bottom: 0.4rem; }
+.quiz-answer { background: var(--code-bg); padding: 0.6rem 0.9rem; border-radius: 4px; font-size: 0.92rem; }
+.source { font-size: 0.85rem; color: var(--muted); }
+.source a { color: var(--accent); }
+table.fields { width: 100%; border-collapse: collapse; margin: 1.2rem 0; font-size: 0.92rem; }
+table.fields th, table.fields td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+table.fields th { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+table.fields code { white-space: nowrap; }
+nav.lesson-nav { display: flex; justify-content: space-between; margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-size: 0.9rem; }
+nav.lesson-nav a { color: var(--accent); text-decoration: none; }
+nav.lesson-nav a:hover { text-decoration: underline; }
+.ask-agent { margin-top: 3rem; padding: 1rem 1.2rem; border: 1px dashed var(--rule); border-radius: 6px; font-size: 0.9rem; color: var(--muted); }
+@media print {
+  body { max-width: 100%; }
+  .ask-agent { display: none; }
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e8e4da; --paper: #1c1b19; --rule: #3a382f; --accent: #e0784f; --muted: #9a9384; --code-bg: #262420; }
+  .quiz { background: #221f1a; }
+}
+</style>
+</head>
+<body>
+
+<h1>EKS Cluster &amp; Node Groups</h1>
+<p class="subtitle">PR #39: <code>terraform/eks.tf</code> and the two new subnets in <code>network.tf</code>. Builds on <a href="0001-vpc-core-concepts.html">Lesson 1</a> (subnets, route tables).</p>
+
+<p>Your read on the subnet/route-table mechanics in this PR is already correct — this lesson confirms that quickly, then spends most of its time on the part that's actually new: EKS node groups, taints, and why the cluster config has two of everything.</p>
+
+<h2>1. What you already had right</h2>
+
+<p><code>network.tf</code> adds two subnets, <code>eks_a</code> (<code>10.0.10.0/24</code>) and <code>eks_b</code> (<code>10.0.11.0/24</code>). <code>/24</code> = 256 addresses, correct. Each is a plain <code>aws_subnet</code> — nothing about it is "public" by itself.</p>
+
+<pre><code>resource "aws_route_table_association" "eks_a" {
+  subnet_id      = aws_subnet.eks_a.id
+  route_table_id = aws_route_table.public.id
+}</code></pre>
+
+<p>This association is what makes them public — it's the <em>same</em> <code>aws_route_table.public</code> that Lesson 1's original public subnet already uses, the one with the single <code>0.0.0.0/0 → igw</code> route. No new route table was created; these two subnets just got wired into the existing one. Your mental model (association = the wire between subnet and route table, route table = the rules, <code>0.0.0.0/0</code> = "yes, internet") is exactly right.</p>
+
+<div class="callout">
+<div class="callout-title">Why public subnets, with no NAT gateway?</div>
+<p>The PR body says it explicitly: no NAT gateway, so <code>map_public_ip_on_launch = true</code> and a route to the internet gateway is the <em>only</em> way these worker nodes can reach the internet at all — to pull container images, talk to the EKS control plane, etc. It's a cost/complexity tradeoff (NAT gateways aren't free), not an oversight.</p>
+</div>
+
+<h2>2. The one genuinely new tag: <code>kubernetes.io/role/elb</code></h2>
+
+<pre><code>tags = {
+  Name                     = "steam-infra-eks-a"
+  "kubernetes.io/role/elb" = "1"
+}</code></pre>
+
+<p>This isn't an AWS mechanism — it's a convention that Kubernetes' own tooling reads. When something in the cluster asks for a <code>LoadBalancer</code>-type Service (say, exposing a Kafka Connect REST API to the internet later), the controller that provisions the actual AWS load balancer doesn't know which of your subnets are safe to put it in. It finds out by scanning your VPC's subnets for this exact tag. <code>kubernetes.io/role/elb = 1</code> says "this is a candidate subnet for a public-facing load balancer"; the equivalent for internal ones is <code>kubernetes.io/role/internal-elb</code>. No tag, no auto-discovery — the load balancer controller would have nothing to place resources into.</p>
+
+<p>So the tag exists for the same reason the subnets are public: it's Kubernetes tooling, running <em>inside</em> the cluster later, reaching back out into raw AWS resources it doesn't otherwise have a config file pointing at.</p>
+
+<h2>3. The EKS module, field by field</h2>
+
+<p><code>eks.tf</code> wraps the community <code>terraform-aws-modules/eks/aws</code> module, which is generating dozens of underlying resources (IAM roles, security groups, the control plane itself) from a much smaller set of inputs you actually write:</p>
+
+<table class="fields">
+<tr><th>Field</th><th>What it controls</th></tr>
+<tr><td><code>cluster_name</code>, <code>cluster_version</code></td><td>Name AWS assigns to the control plane, and which Kubernetes version it runs.</td></tr>
+<tr><td><code>vpc_id</code>, <code>subnet_ids</code></td><td>Which network the control plane and nodes live in — the two subnets from Section 1.</td></tr>
+<tr><td><code>cluster_endpoint_public_access</code></td><td>Whether the Kubernetes API server (the thing <code>kubectl</code> talks to) has a public endpoint at all, separate from whether the <em>worker nodes</em> have public IPs.</td></tr>
+<tr><td><code>authentication_mode</code></td><td>How AWS IAM identities map to Kubernetes users. <code>"API"</code> means that mapping lives in an AWS-native API instead of a Kubernetes ConfigMap you'd otherwise have to edit by hand.</td></tr>
+<tr><td><code>enable_cluster_creator_admin_permissions</code></td><td>Whoever runs <code>terraform apply</code> automatically gets cluster-admin — convenience for a small team, one line instead of a separate access-entry resource.</td></tr>
+<tr><td><code>eks_managed_node_groups</code></td><td>The actual EC2 worker pools — Section 4.</td></tr>
+</table>
+
+<h2>4. Node groups: why <em>two</em>, not one</h2>
+
+<p>An <strong>EKS managed node group</strong> is a pool of EC2 instances that AWS provisions, joins to your cluster, and keeps at your desired count automatically — you describe the pool, not each machine. This PR defines two:</p>
+
+<pre><code>system = {
+  instance_types = ["t3.medium"]
+  min_size = 1, max_size = 3, desired_size = 2
+}
+
+kafka = {
+  instance_types = ["m5.large"]
+  min_size = 3, max_size = 3, desired_size = 3
+  labels = { role = "kafka" }
+  taints = { kafka = { key = "dedicated", value = "kafka", effect = "NO_SCHEDULE" } }
+}</code></pre>
+
+<p>Every Kubernetes cluster needs some baseline capacity for cluster-wide plumbing — DNS, logging agents, the load-balancer controller from Section 2, and so on. That's <code>system</code>: general-purpose, cheap, autoscaling instances (<code>t3.medium</code>, burstable, 1–3 nodes). It's deliberately generic because it's meant to host whatever shows up.</p>
+
+<p><code>kafka</code> exists because Kafka brokers have needs the <code>system</code> pool doesn't guarantee: a fixed, predictable node count (<code>min = max = desired = 3</code>, no autoscaling — brokers care about stable identity, not elastic scale-to-zero), and beefier steady-state instances (<code>m5.large</code>, not burstable). Mixing that in with whatever else lands on <code>system</code> risks a random pod eating the CPU or memory a broker needs, or an autoscaler evicting a node a broker was pinned to. Separate pool, separate guarantees.</p>
+
+<h2>5. Taints and labels — the two-sided handshake that keeps them separate</h2>
+
+<p>Having two node groups isn't enough by itself — by default, Kubernetes' scheduler will happily drop <em>any</em> pod onto <em>any</em> node with room, including your Kafka nodes. Taints and labels are the two independent mechanisms that stop that.</p>
+
+<div class="callout">
+<div class="callout-title">Label — an opt-in, not an enforcement</div>
+<p><code>labels = { role = "kafka" }</code> just stamps every node in this group with <code>role=kafka</code>. On its own it does nothing — it's descriptive metadata. A Kafka pod would separately need a <code>nodeSelector: { role: kafka }</code> in its own spec to actually request landing there. Labels answer "where do I <em>want</em> to go?"</p>
+</div>
+
+<div class="callout">
+<div class="callout-title">Taint — a repel, not an attract</div>
+<p><code>taints = { kafka = { key = "dedicated", value = "kafka", effect = "NO_SCHEDULE" } }</code> does the opposite job: it marks every node in this group as off-limits to <em>everything</em>, by default. <code>NO_SCHEDULE</code> means the scheduler won't place a new pod here unless that pod carries a matching <strong>toleration</strong> — a clause in its own spec saying "I tolerate the <code>dedicated=kafka</code> taint." No toleration, no placement, full stop. Taints answer "who's allowed to land on me?"</p>
+</div>
+
+<p>Put together: the label is how a Kafka pod finds these nodes; the taint is what keeps every <em>other</em> pod off them. You need both — a label alone wouldn't stop a random pod from landing here anyway, and a taint alone wouldn't tell Kafka pods where to go. The <code>system</code> group has neither, which is exactly why it's the default landing spot for anything that doesn't ask for somewhere specific.</p>
+
+<div class="diagram">  system node group              kafka node group
+  (t3.medium, 1-3 nodes)          (m5.large, fixed at 3)
+  no taint, no label              taint: dedicated=kafka (NO_SCHEDULE)
+                                   label: role=kafka
+
+  ┌─────────────┐                 ┌─────────────┐
+  │ random pod    │─── lands ────▶│      ✕ blocked (no toleration)
+  │ (no tolerations)│              └─────────────┘
+  └─────────────┘
+
+  ┌─────────────┐   toleration: dedicated=kafka
+  │ kafka broker pod │───────────────▶│ ✓ lands (tolerates taint,
+  │ nodeSelector:   │                 │   matches label)
+  │  role=kafka     │                 └─────────────┘
+  └─────────────┘</div>
+
+<p class="source">Primary sources: <a href="https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/">Kubernetes docs — Taints and Tolerations</a>, <a href="https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html">AWS EKS User Guide — Managed node groups</a>, <a href="https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/deploy/subnet_discovery/">AWS Load Balancer Controller — Subnet auto-discovery (the <code>kubernetes.io/role/elb</code> tag)</a>.</p>
+
+<h2>Check yourself</h2>
+
+<div class="quiz">
+<div class="quiz-q">Q1. What makes <code>eks_a</code> and <code>eks_b</code> public subnets rather than private ones?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">Route table association to public.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q2. A pod with no taints or tolerations gets scheduled. Which node group can it land on?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">Only the system node group.</div></details>
+</div>
+
+<div class="quiz">
+<div class="quiz-q">Q3. Does the label alone stop other pods from landing on the kafka nodes?</div>
+<details><summary>Reveal answer</summary><div class="quiz-answer">No — only the taint does.</div></details>
+</div>
+
+<div class="ask-agent">Want to see the actual toleration block a Kafka pod spec would need to match this taint, or trace how <code>kubernetes.io/role/elb</code> gets read once the load balancer controller is installed? Ask your agent.</div>
+
+<nav class="lesson-nav">
+<a href="0003-rds-and-ssm-tunnel.html">&larr; Lesson 3: RDS &amp; the SSM Tunnel</a>
+<span>Next: not yet written</span>
+</nav>
+
+</body>
+</html>
