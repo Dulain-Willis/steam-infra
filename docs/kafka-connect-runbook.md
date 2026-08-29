@@ -87,11 +87,11 @@ Both connectors + all tasks `RUNNING` via the Connect REST API (fast signal —
 checks before any data has to flow):
 
 ```bash
-kubectl exec -n kafka steam-infra-connect-0 -- \
-  curl -s localhost:8083/connectors/debezium-postgres-source/status
-kubectl exec -n kafka steam-infra-connect-0 -- \
-  curl -s localhost:8083/connectors/snowflake-sink/status
+./scripts/check-connector-health.sh
 ```
+
+Exits non-zero with the failing connector/task and state if anything isn't
+`RUNNING` (#46).
 
 Topics created for all 14 tables (`topic.prefix: steam` +
 `schema.include.list: public`):
