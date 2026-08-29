@@ -45,6 +45,13 @@ spec:
     # instead of inlining credentials in the CR (#43, #44).
     config.providers: secrets
     config.providers.secrets.class: io.strimzi.kafka.KubernetesSecretConfigProvider
+  template:
+    pod:
+      # Strimzi's default /tmp tmpfs is 5Mi, too small for the Snowflake
+      # Kafka connector's Snowpipe Streaming v2 client — it extracts a
+      # native (JNI) library into /tmp on startup and fails with "No space
+      # left on device" at the default size (#45).
+      tmpDirSizeLimit: 100Mi
   build:
     output:
       type: docker
@@ -60,6 +67,14 @@ spec:
         artifacts:
           - type: jar
             url: https://repo1.maven.org/maven2/com/snowflake/snowflake-kafka-connector/4.1.0/snowflake-kafka-connector-4.1.0.jar
+          # bc-fips/bcpkix-fips: not shaded into the connector jar above, but
+          # required at runtime for RSA key-pair auth (snowflake.private.key) —
+          # missing these throws NoClassDefFoundError on BouncyCastleFipsProvider
+          # as soon as a connector config referencing them is validated (#45).
+          - type: jar
+            url: https://repo1.maven.org/maven2/org/bouncycastle/bc-fips/1.0.2.5/bc-fips-1.0.2.5.jar
+          - type: jar
+            url: https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-fips/1.0.7/bcpkix-fips-1.0.7.jar
 ---
 # KubernetesSecretConfigProvider (enabled above) needs explicit RBAC to read
 # Secrets — the Connect pod's default service account has none by default.
