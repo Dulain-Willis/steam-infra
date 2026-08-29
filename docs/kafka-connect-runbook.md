@@ -140,11 +140,10 @@ isn't cleaned up automatically and pins WAL on the RDS instance otherwise
 (`docs/debezium-postgres-config.md`):
 
 ```bash
-PGPASSWORD=$(cd terraform && tofu output -raw db_password) \
-  psql -h localhost -p 15432 -U steam_proj_admin -d steam \
-  -c "select pg_drop_replication_slot('debezium_steam');"
+scripts/teardown-replication-slot.sh
 ```
 
-(Open the SSM tunnel first — see `docs/rds-bootstrap.md` step 2.) The `kafka`
-namespace itself doesn't survive `tofu destroy` (it lives on the EKS
-cluster being destroyed), so nothing else needs explicit cleanup.
+Opens its own SSM tunnel (no manual tunnel setup needed) and is a no-op if
+the slot's already gone. The `kafka` namespace itself doesn't survive
+`tofu destroy` (it lives on the EKS cluster being destroyed), so nothing
+else needs explicit cleanup.

@@ -21,4 +21,4 @@ Set `snapshot.mode: always`. This project's design ([#27](https://github.com/Dul
 
 Debezium creates a named replication slot on the RDS instance to track its read position, and does **not** delete it when the connector goes away. Because a fresh snapshot is taken every session, an old slot left behind after `tofu destroy` pins WAL on the RDS instance indefinitely — storage grows silently with nothing consuming it.
 
-**Action required on every teardown**: explicitly drop the replication slot before/during `tofu destroy`, don't rely on Debezium's defaults. This should get wired into whatever teardown process resolves the pipeline's build spec later — flagging here so it isn't lost between "we decided this" and "someone wires it into a script."
+**Action required on every teardown**: explicitly drop the replication slot before/during `tofu destroy`, don't rely on Debezium's defaults. Run `scripts/teardown-replication-slot.sh` before `tofu destroy` (#48) — see `docs/kafka-connect-runbook.md`'s Teardown section.
