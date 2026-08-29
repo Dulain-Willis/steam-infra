@@ -72,14 +72,25 @@ cd ..
 sed "s|<rds-endpoint>|$RDS_HOST|" k8s/kafka/debezium-connector.yaml | kubectl apply -f -
 ```
 
-## 7. Verify
+## 7. Snowflake sink connector
 
-Connector + all tasks `RUNNING` via the Connect REST API (fast signal —
+```bash
+kubectl apply -f k8s/kafka/snowflake-connector.yaml
+```
+
+Consumes the 14 `steam.public.*` Debezium topics directly and writes to
+Snowflake via Snowpipe — no S3 or other landing zone (#34, #45).
+
+## 8. Verify
+
+Both connectors + all tasks `RUNNING` via the Connect REST API (fast signal —
 checks before any data has to flow):
 
 ```bash
 kubectl exec -n kafka steam-infra-connect-0 -- \
   curl -s localhost:8083/connectors/debezium-postgres-source/status
+kubectl exec -n kafka steam-infra-connect-0 -- \
+  curl -s localhost:8083/connectors/snowflake-sink/status
 ```
 
 Topics created for all 14 tables (`topic.prefix: steam` +
@@ -92,6 +103,13 @@ kubectl exec -n kafka steam-infra-dual-role-0 -c kafka -- \
 
 Should list 14 topics, `steam.public.<table>` for each table in
 `db/schema.sql`.
+
+Snowflake tables receiving rows (each `steam.public.<table>` topic lands in
+`STEAM_PROJECT.PUBLIC.<table>` per `snowflake.topic2table.map`):
+
+```sql
+select count(*) from steam_project.public.users;
+```
 
 ## Teardown
 

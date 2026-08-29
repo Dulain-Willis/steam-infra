@@ -1,0 +1,53 @@
+# Snowflake sink connector consuming Debezium's topics directly (#45, per
+# #34's locked decision) — no S3 or other intermediate landing zone. Uses
+# Snowflake's free/open-source Kafka connector in its default Snowpipe
+# (buffered, serverless) mode, not Snowpipe Streaming — no warehouse needed
+# for loading. Applied via kubectl, not Terraform (IaC boundary #28).
+#
+# Requires:
+#   - Kafka Connect running with the snowflake-kafka-connector plugin built
+#     in (kafka-connect.yaml, #42) and config.providers=secrets enabled
+#     there for the ${secrets:...} ref below
+#   - the snowflake-keypair Secret in the `kafka` namespace
+#     (scripts/create-connector-secrets.sh, #43) — private key registered
+#     to snowflake.user.name below via ALTER USER ... SET RSA_PUBLIC_KEY
+#   - the debezium-postgres-source connector already producing the 14
+#     steam.public.* topics (debezium-connector.yaml, #44)
+#
+# snowflake.topic2table.map gives each topic a clean table name (steam_infra
+# tables get created automatically on first record if missing) instead of
+# the connector's default sanitized-topic-name table naming.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaConnector
+metadata:
+  name: snowflake-sink
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: steam-infra
+spec:
+  class: com.snowflake.kafka.connector.SnowflakeSinkConnector
+  tasksMax: 1
+  config:
+    topics: >-
+      steam.public.users,steam.public.games,steam.public.game_prices,
+      steam.public.purchases,steam.public.ownership_grants,steam.public.gifts,
+      steam.public.key_redemptions,steam.public.refunds,steam.public.family_shares,
+      steam.public.wishlist_items,steam.public.playtime_sessions,steam.public.reviews,
+      steam.public.price_changes,steam.public.concurrent_player_snapshots
+    snowflake.topic2table.map: >-
+      steam.public.users:users,steam.public.games:games,
+      steam.public.game_prices:game_prices,steam.public.purchases:purchases,
+      steam.public.ownership_grants:ownership_grants,steam.public.gifts:gifts,
+      steam.public.key_redemptions:key_redemptions,steam.public.refunds:refunds,
+      steam.public.family_shares:family_shares,steam.public.wishlist_items:wishlist_items,
+      steam.public.playtime_sessions:playtime_sessions,steam.public.reviews:reviews,
+      steam.public.price_changes:price_changes,
+      steam.public.concurrent_player_snapshots:concurrent_player_snapshots
+    snowflake.url.name: https://FMBSGSW-YU41950.snowflakecomputing.com:443
+    snowflake.user.name: DULAIN
+    snowflake.private.key: "${secrets:kafka/snowflake-keypair:private_key}"
+    snowflake.database.name: STEAM_PROJECT
+    snowflake.schema.name: PUBLIC
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    value.converter: com.snowflake.kafka.connector.records.SnowflakeJsonConverter
+    value.converter.schemas.enable: "false"
