@@ -37,8 +37,10 @@ kubectl create secret generic rds-credentials -n kafka \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> snowflake-keypair"
+# snowflake.private.key expects the base64 body only, no PEM header/footer/newlines.
+PRIVATE_KEY_STRIPPED=$(grep -v '^-----' "$KEY_FILE" | tr -d '\n')
 kubectl create secret generic snowflake-keypair -n kafka \
-  --from-file=private_key="$KEY_FILE" \
+  --from-literal=private_key="$PRIVATE_KEY_STRIPPED" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 echo "==> done"
