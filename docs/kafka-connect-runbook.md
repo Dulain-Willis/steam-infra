@@ -87,11 +87,11 @@ Both connectors + all tasks `RUNNING` via the Connect REST API (fast signal —
 checks before any data has to flow):
 
 ```bash
-kubectl exec -n kafka steam-infra-connect-0 -- \
-  curl -s localhost:8083/connectors/debezium-postgres-source/status
-kubectl exec -n kafka steam-infra-connect-0 -- \
-  curl -s localhost:8083/connectors/snowflake-sink/status
+./scripts/check-connector-health.sh
 ```
+
+Exits non-zero with the failing connector/task and state if anything isn't
+`RUNNING` (#46).
 
 Topics created for all 14 tables (`topic.prefix: steam` +
 `schema.include.list: public`):
@@ -110,6 +110,28 @@ Snowflake tables receiving rows (each `steam.public.<table>` topic lands in
 ```sql
 select count(*) from steam_project.public.users;
 ```
+
+## 9. End-to-end smoke test
+
+Health checks above confirm the connectors are up, but not that data
+actually flows. One command proves the whole pipeline end to end (#47):
+writes a row to RDS via the same connection settings the generator uses,
+then polls Snowflake until it's replicated or a bounded timeout elapses.
+
+```bash
+# through the SSM tunnel (docs/rds-bootstrap.md step 2), from repo root:
+VENV=/tmp/steam-infra-smoke-venv
+python3 -m venv "$VENV"
+"$VENV/bin/pip" install -q -r scripts/requirements-smoke-test.txt
+
+DB_HOST=localhost DB_PORT=15432 DB_NAME=steam DB_USER=steam_proj_admin \
+DB_PASSWORD=$(cd terraform && tofu output -raw db_password) \
+"$VENV/bin/python" scripts/smoke-test.py
+```
+
+Fails with a clear message (not a hang) on timeout, naming what to check
+next in order: connector health, RDS logical replication prereqs, then
+Snowflake ingestion.
 
 ## Teardown
 
