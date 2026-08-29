@@ -41,6 +41,10 @@ spec:
     offset.storage.replication.factor: 3
     config.storage.replication.factor: 3
     status.storage.replication.factor: 3
+    # Lets connector configs reference k8s Secret values (${secrets:kafka/<name>:<key>})
+    # instead of inlining credentials in the CR (#43, #44).
+    config.providers: secrets
+    config.providers.secrets.class: io.strimzi.kafka.KubernetesSecretConfigProvider
   build:
     output:
       type: docker
@@ -56,3 +60,30 @@ spec:
         artifacts:
           - type: jar
             url: https://repo1.maven.org/maven2/com/snowflake/snowflake-kafka-connector/4.1.0/snowflake-kafka-connector-4.1.0.jar
+---
+# KubernetesSecretConfigProvider (enabled above) needs explicit RBAC to read
+# Secrets — the Connect pod's default service account has none by default.
+# Service account name is fixed by Strimzi: <KafkaConnect metadata.name>-connect.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: steam-infra-connect-secret-reader
+  namespace: kafka
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: steam-infra-connect-secret-reader
+  namespace: kafka
+subjects:
+  - kind: ServiceAccount
+    name: steam-infra-connect
+    namespace: kafka
+roleRef:
+  kind: Role
+  name: steam-infra-connect-secret-reader
+  apiGroup: rbac.authorization.k8s.io
