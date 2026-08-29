@@ -49,6 +49,17 @@ if [ "$EXISTS" != "1" ]; then
   exit 0
 fi
 
+# The Debezium connector pod is usually still up and connected when this
+# runs (it's meant to run before/during tofu destroy, not after), which
+# leaves the slot "active" — pg_drop_replication_slot refuses to drop an
+# active slot. Kill the walsender backend holding it first so the drop
+# always succeeds regardless of whether the connector's been stopped.
+ACTIVE_PID=$($PSQL -c "select active_pid from pg_replication_slots where slot_name = '$SLOT_NAME' and active;")
+if [ -n "$ACTIVE_PID" ]; then
+  echo "==> slot is active (pid $ACTIVE_PID), terminating backend"
+  $PSQL -c "select pg_terminate_backend($ACTIVE_PID);" >/dev/null
+fi
+
 echo "==> dropping replication slot: $SLOT_NAME"
 $PSQL -c "select pg_drop_replication_slot('$SLOT_NAME');" >/dev/null
 
