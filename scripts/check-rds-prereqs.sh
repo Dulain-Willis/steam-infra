@@ -64,7 +64,7 @@ MISSING=$($PSQL -c "
     ('users'),('games'),('game_prices'),('purchases'),('ownership_grants'),
     ('gifts'),('key_redemptions'),('refunds'),('family_shares'),
     ('wishlist_items'),('playtime_sessions'),('reviews'),('price_changes'),
-    ('concurrent_player_snapshots')
+    ('concurrent_player_snapshots'),('marketing_campaigns')
   ) as t(tablename)
   where not has_table_privilege('steam_proj_admin', 'public.' || t.tablename, 'SELECT');
 ")
@@ -72,6 +72,6 @@ if [ -n "$MISSING" ]; then
   echo "FAIL: steam_proj_admin missing SELECT on: $MISSING" >&2
   exit 1
 fi
-echo "OK: steam_proj_admin has SELECT on all 14 tables"
+echo "OK: steam_proj_admin has SELECT on all 15 tables"
 
 echo "==> all prerequisites met"

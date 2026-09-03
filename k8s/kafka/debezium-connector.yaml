@@ -1,4 +1,4 @@
-# Debezium Postgres source connector for all 14 OLTP tables (#44, per
+# Debezium Postgres source connector for all 15 OLTP tables (#44, #10, per
 # docs/debezium-postgres-config.md and #29). Applied via kubectl, not
 # Terraform (IaC boundary #28). Requires:
 #   - Kafka Connect running with the debezium-postgres-connector plugin
@@ -42,7 +42,7 @@ spec:
       public.ownership_grants,public.gifts,public.key_redemptions,
       public.refunds,public.family_shares,public.wishlist_items,
       public.playtime_sessions,public.reviews,public.price_changes,
-      public.concurrent_player_snapshots
+      public.concurrent_player_snapshots,public.marketing_campaigns
     topic.creation.enable: "true"
     topic.creation.default.replication.factor: 3
     topic.creation.default.partitions: 1

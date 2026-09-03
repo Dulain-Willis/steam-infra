@@ -36,6 +36,17 @@ create table game_prices (
 );
 create index on game_prices (game_id);
 
+create table marketing_campaigns (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    channel text not null check (channel in ('paid_search', 'paid_social', 'email', 'influencer', 'affiliate')),
+    spend_cents bigint not null,        -- total campaign spend, no daily breakdown
+    currency text not null default 'USD',   -- USD-flat (spend_cents is already USD)
+    starts_at timestamptz not null,
+    ends_at timestamptz not null,
+    created_at timestamptz not null default now()
+);
+
 -- ==================== EVENT TABLES ====================
 
 create table purchases (

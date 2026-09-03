@@ -19,7 +19,7 @@ aws eks update-kubeconfig --name steam-infra
 ```
 
 Verifies `rds.logical_replication=1` is actually in effect and
-`steam_proj_admin` has `rds_replication` + `SELECT` on all 14 tables. Fails
+`steam_proj_admin` has `rds_replication` + `SELECT` on all 15 tables. Fails
 with the exact fix (e.g. the missing `GRANT`) rather than letting a bad
 connector config look like a new bug.
 
@@ -78,7 +78,7 @@ sed "s|<rds-endpoint>|$RDS_HOST|" k8s/kafka/debezium-connector.yaml | kubectl ap
 kubectl apply -f k8s/kafka/snowflake-connector.yaml
 ```
 
-Consumes the 14 `steam.public.*` Debezium topics directly and writes to
+Consumes the 15 `steam.public.*` Debezium topics directly and writes to
 Snowflake via Snowpipe — no S3 or other landing zone (#34, #45).
 
 ## 8. Verify
@@ -93,7 +93,7 @@ checks before any data has to flow):
 Exits non-zero with the failing connector/task and state if anything isn't
 `RUNNING` (#46).
 
-Topics created for all 14 tables (`topic.prefix: steam` +
+Topics created for all 15 tables (`topic.prefix: steam` +
 `schema.include.list: public`):
 
 ```bash
@@ -101,7 +101,7 @@ kubectl exec -n kafka steam-infra-dual-role-0 -c kafka -- \
   bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | grep ^steam\\.public\\.
 ```
 
-Should list 14 topics, `steam.public.<table>` for each table in
+Should list 15 topics, `steam.public.<table>` for each table in
 `db/schema.sql`.
 
 Snowflake tables receiving rows (each `steam.public.<table>` topic lands in

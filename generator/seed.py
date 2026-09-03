@@ -7,6 +7,7 @@ generator starts writing event rows.
 import logging
 import os
 import random
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
@@ -16,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 NUM_USERS = int(os.environ.get("SEED_NUM_USERS", "50000"))
 NUM_GAMES = int(os.environ.get("SEED_NUM_GAMES", "3000"))
+NUM_CAMPAIGNS = int(os.environ.get("SEED_NUM_CAMPAIGNS", "40"))
 _seed_env = os.environ.get("SEED_RANDOM_SEED")
 RANDOM_SEED = int(_seed_env) if _seed_env else None
 
@@ -35,6 +37,11 @@ GENRE_POOL = [
     "Sports", "Puzzle", "Horror", "Indie", "Racing",
 ]
 LANGUAGE_POOL = ["English", "French", "German", "Spanish", "Japanese", "Portuguese"]
+
+# Fixed channel enum, mirrored by the marketing_campaigns.channel check
+# constraint in db/schema.sql and the ownership_grants.source snake_case
+# convention. Extend both together.
+CHANNELS = ["paid_search", "paid_social", "email", "influencer", "affiliate"]
 
 
 def generate_users(n, fake, rng):
@@ -64,6 +71,22 @@ def generate_game_prices(game_ids, rng):
         for region, currency in REGIONS:
             price_cents = int(base_cents * rng.uniform(0.85, 1.15))
             rows.append((game_id, region, currency, price_cents))
+    return rows
+
+
+def generate_marketing_campaigns(n, fake, rng):
+    """One row per campaign: total spend only, no daily breakdown. Currency is
+    USD-flat (spend_cents is already USD). starts_at/ends_at scatter over the
+    last ~9 months so campaigns overlap the generator's event window."""
+    now = datetime.now(timezone.utc)
+    rows = []
+    for _ in range(n):
+        channel = rng.choice(CHANNELS)
+        starts_at = now - timedelta(days=rng.randint(0, 270), hours=rng.randint(0, 23))
+        ends_at = starts_at + timedelta(days=rng.randint(14, 90))
+        spend_cents = rng.randint(50_000, 5_000_000)
+        name = f"{fake.catch_phrase()} ({channel})"
+        rows.append((name, channel, spend_cents, "USD", starts_at, ends_at))
     return rows
 
 
@@ -107,6 +130,16 @@ def insert_game_prices(cur, rows):
     )
 
 
+def insert_marketing_campaigns(cur, rows):
+    psycopg2.extras.execute_values(
+        cur,
+        "insert into marketing_campaigns "
+        "(name, channel, spend_cents, currency, starts_at, ends_at) values %s",
+        rows,
+        page_size=BATCH_SIZE,
+    )
+
+
 def main():
     fake = Faker()
     if RANDOM_SEED is not None:
@@ -125,9 +158,12 @@ def main():
             logging.info("seeding game_prices for %d games", len(game_ids))
             insert_game_prices(cur, generate_game_prices(game_ids, rng))
 
+            logging.info("seeding %d marketing_campaigns", NUM_CAMPAIGNS)
+            insert_marketing_campaigns(cur, generate_marketing_campaigns(NUM_CAMPAIGNS, fake, rng))
+
         logging.info(
-            "done: %d users, %d games, %d game_prices rows",
-            NUM_USERS, len(game_ids), len(game_ids) * len(REGIONS),
+            "done: %d users, %d games, %d game_prices rows, %d marketing_campaigns",
+            NUM_USERS, len(game_ids), len(game_ids) * len(REGIONS), NUM_CAMPAIGNS,
         )
     finally:
         conn.close()
