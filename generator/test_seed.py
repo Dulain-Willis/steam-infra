@@ -4,6 +4,7 @@ from faker import Faker
 
 from seed import (
     CHANNELS,
+    COUNTRIES,
     REGIONS,
     generate_game_prices,
     generate_games,
@@ -37,11 +38,22 @@ def test_generate_users_unique_username_and_email():
     Faker.seed(2)
     rows = generate_users(1000, fake, random.Random(2))
 
-    usernames = [username for username, _ in rows]
-    emails = [email for _, email in rows]
+    usernames = [username for username, _, _ in rows]
+    emails = [email for _, email, _ in rows]
 
     assert len(usernames) == len(set(usernames)) == 1000
     assert len(emails) == len(set(emails)) == 1000
+
+
+def test_generate_users_country_distribution():
+    fake = Faker()
+    Faker.seed(2)
+    rows = generate_users(2000, fake, random.Random(2))
+
+    countries = [country for _, _, country in rows]
+    assert any(c is None for c in countries)          # nullable in the data
+    assert {c for c in countries if c is not None} <= set(COUNTRIES)
+    assert countries.count("US") > countries.count("SE")  # weighting takes effect
 
 
 def test_generate_games_null_rate_boundary_below_threshold_nulls_both():
