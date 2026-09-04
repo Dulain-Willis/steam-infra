@@ -1,8 +1,10 @@
 #!/bin/bash
 # Verify the RDS prerequisites the Debezium Postgres connector needs (#44,
 # #31): logical replication turned on, and the connecting user granted
-# rds_replication + SELECT on the captured tables. Both are already applied
-# by terraform/rds.tf/db/schema.sql — this only checks, it creates nothing.
+# rds_replication + SELECT on the captured tables. These are set up by
+# terraform/rds.tf (rds.logical_replication param) and db/schema.sql
+# (the rds_replication GRANT; SELECT comes from table ownership) — this
+# only checks, it creates nothing.
 # Run before applying k8s/kafka/debezium-connector.yaml so a missing
 # prerequisite fails clearly here instead of showing up as an opaque
 # connector-startup error.
@@ -64,7 +66,7 @@ MISSING=$($PSQL -c "
     ('users'),('games'),('game_prices'),('purchases'),('ownership_grants'),
     ('gifts'),('key_redemptions'),('refunds'),('family_shares'),
     ('wishlist_items'),('playtime_sessions'),('reviews'),('price_changes'),
-    ('concurrent_player_snapshots')
+    ('concurrent_player_snapshots'),('marketing_campaigns')
   ) as t(tablename)
   where not has_table_privilege('steam_proj_admin', 'public.' || t.tablename, 'SELECT');
 ")
@@ -72,6 +74,6 @@ if [ -n "$MISSING" ]; then
   echo "FAIL: steam_proj_admin missing SELECT on: $MISSING" >&2
   exit 1
 fi
-echo "OK: steam_proj_admin has SELECT on all 14 tables"
+echo "OK: steam_proj_admin has SELECT on all 15 tables"
 
 echo "==> all prerequisites met"

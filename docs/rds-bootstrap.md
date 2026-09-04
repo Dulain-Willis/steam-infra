@@ -47,7 +47,7 @@ PGPASSWORD=$(tofu output -raw db_password) psql -h localhost -p 15432 -U steam_p
 PGPASSWORD=$(tofu output -raw db_password) psql -h localhost -p 15432 -U steam_proj_admin -d steam -c '\dt'
 ```
 
-Should list 14 tables, 0 rows each.
+Should list 15 tables, 0 rows each.
 
 ## Interactive session
 

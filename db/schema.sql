@@ -5,6 +5,13 @@
 
 create extension if not exists pgcrypto;
 
+-- Debezium's pgoutput plugin needs the connecting user in the rds_replication
+-- role (RDS's substitute for the superuser-only REPLICATION privilege). Applied
+-- here rather than in Terraform to avoid pulling in a Postgres provider for one
+-- GRANT — schema.sql already runs as the master user. See
+-- docs/debezium-postgres-config.md.
+grant rds_replication to steam_proj_admin;
+
 -- ==================== ENTITY / STATE TABLES ====================
 
 create table users (
@@ -35,6 +42,18 @@ create table game_prices (
     unique (game_id, region)
 );
 create index on game_prices (game_id);
+
+create table marketing_campaigns (
+    id uuid primary key default gen_random_uuid(),
+    name text not null,
+    channel text not null check (channel in ('paid_search', 'paid_social', 'email', 'influencer', 'affiliate')),
+    spend_cents bigint not null check (spend_cents >= 0),    -- total campaign spend, no daily breakdown
+    currency text not null default 'USD' check (currency = 'USD'),   -- USD-flat; drop the check if multi-currency spend ever lands
+    starts_at timestamptz not null,
+    ends_at timestamptz not null,
+    created_at timestamptz not null default now(),
+    check (ends_at > starts_at)
+);
 
 -- ==================== EVENT TABLES ====================
 

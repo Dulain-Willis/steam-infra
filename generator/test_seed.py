@@ -2,7 +2,14 @@ import random
 
 from faker import Faker
 
-from seed import REGIONS, generate_game_prices, generate_games, generate_users
+from seed import (
+    CHANNELS,
+    REGIONS,
+    generate_game_prices,
+    generate_games,
+    generate_marketing_campaigns,
+    generate_users,
+)
 
 
 class StubRandom:
@@ -67,3 +74,17 @@ def test_generate_game_prices_covers_every_region_per_game():
 
     regions_for_game_1 = {region for game_id, region, _, _ in rows if game_id == "game-1"}
     assert regions_for_game_1 == {region for region, _ in REGIONS}
+
+
+def test_generate_marketing_campaigns_shape_and_invariants():
+    fake = Faker()
+    Faker.seed(4)
+    rows = generate_marketing_campaigns(200, fake, random.Random(4))
+
+    assert len(rows) == 200
+    for name, channel, spend_cents, currency, starts_at, ends_at in rows:
+        assert name
+        assert channel in CHANNELS
+        assert spend_cents > 0
+        assert currency == "USD"
+        assert ends_at > starts_at
