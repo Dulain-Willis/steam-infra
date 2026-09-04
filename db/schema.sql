@@ -47,11 +47,12 @@ create table marketing_campaigns (
     id uuid primary key default gen_random_uuid(),
     name text not null,
     channel text not null check (channel in ('paid_search', 'paid_social', 'email', 'influencer', 'affiliate')),
-    spend_cents bigint not null,        -- total campaign spend, no daily breakdown
-    currency text not null default 'USD',   -- USD-flat (spend_cents is already USD)
+    spend_cents bigint not null check (spend_cents >= 0),    -- total campaign spend, no daily breakdown
+    currency text not null default 'USD' check (currency = 'USD'),   -- USD-flat; drop the check if multi-currency spend ever lands
     starts_at timestamptz not null,
     ends_at timestamptz not null,
-    created_at timestamptz not null default now()
+    created_at timestamptz not null default now(),
+    check (ends_at > starts_at)
 );
 
 -- ==================== EVENT TABLES ====================

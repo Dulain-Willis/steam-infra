@@ -1,8 +1,10 @@
 #!/bin/bash
 # Verify the RDS prerequisites the Debezium Postgres connector needs (#44,
 # #31): logical replication turned on, and the connecting user granted
-# rds_replication + SELECT on the captured tables. Both are already applied
-# by terraform/rds.tf/db/schema.sql — this only checks, it creates nothing.
+# rds_replication + SELECT on the captured tables. These are set up by
+# terraform/rds.tf (rds.logical_replication param) and db/schema.sql
+# (the rds_replication GRANT; SELECT comes from table ownership) — this
+# only checks, it creates nothing.
 # Run before applying k8s/kafka/debezium-connector.yaml so a missing
 # prerequisite fails clearly here instead of showing up as an opaque
 # connector-startup error.

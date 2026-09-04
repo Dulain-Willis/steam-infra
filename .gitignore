@@ -5,3 +5,7 @@ __pycache__/
 # Snowflake RSA key pair for the Kafka connector (#43) — private key must
 # never land in git; kept local, wired into a k8s Secret each session.
 .secrets/
+
+# stray root-level tofu state (real state lives in terraform/)
+/terraform.tfstate
+/terraform.tfstate.backup

@@ -38,9 +38,9 @@ GENRE_POOL = [
 ]
 LANGUAGE_POOL = ["English", "French", "German", "Spanish", "Japanese", "Portuguese"]
 
-# Fixed channel enum, mirrored by the marketing_campaigns.channel check
-# constraint in db/schema.sql and the ownership_grants.source snake_case
-# convention. Extend both together.
+# Must stay in sync with the marketing_campaigns.channel check constraint in
+# db/schema.sql (extend both together). snake_case to match the
+# ownership_grants.source naming convention.
 CHANNELS = ["paid_search", "paid_social", "email", "influencer", "affiliate"]
 
 
