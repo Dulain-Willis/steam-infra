@@ -12,7 +12,7 @@
 #   - the snowflake-keypair Secret in the `kafka` namespace
 #     (scripts/create-connector-secrets.sh, #43) — private key registered
 #     to snowflake.user.name below via ALTER USER ... SET RSA_PUBLIC_KEY
-#   - the debezium-postgres-source connector already producing the 15
+#   - the debezium-postgres-source connector already producing the 16
 #     steam.public.* topics (debezium-connector.yaml, #44, #10)
 #
 # snowflake.topic2table.map gives each topic a clean table name (steam_infra
@@ -35,7 +35,7 @@ spec:
       steam.public.key_redemptions,steam.public.refunds,steam.public.family_shares,
       steam.public.wishlist_items,steam.public.playtime_sessions,steam.public.reviews,
       steam.public.price_changes,steam.public.concurrent_player_snapshots,
-      steam.public.marketing_campaigns
+      steam.public.marketing_campaigns,steam.public.client_events
     snowflake.topic2table.map: >-
       steam.public.users:users,steam.public.games:games,
       steam.public.game_prices:game_prices,steam.public.purchases:purchases,
@@ -45,7 +45,8 @@ spec:
       steam.public.playtime_sessions:playtime_sessions,steam.public.reviews:reviews,
       steam.public.price_changes:price_changes,
       steam.public.concurrent_player_snapshots:concurrent_player_snapshots,
-      steam.public.marketing_campaigns:marketing_campaigns
+      steam.public.marketing_campaigns:marketing_campaigns,
+      steam.public.client_events:client_events
     snowflake.url.name: https://FMBSGSW-YU41950.snowflakecomputing.com:443
     snowflake.user.name: DULAIN
     snowflake.private.key: "${secrets:kafka/snowflake-keypair:private_key}"
