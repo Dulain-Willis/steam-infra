@@ -1,13 +1,18 @@
+import json
 import random
 from collections import Counter
 from datetime import datetime, timezone
 
 from generator import (
+    CLIENT_EVENT_REFERRERS,
     EVENT_HANDLERS,
     EVENT_WEIGHTS,
+    FUNNEL_STEPS,
     REFUND_REASONS,
+    client_events_tick,
     concurrent_player_snapshot_tick,
     family_share_tick,
+    funnel_session,
     gift_redeem_tick,
     gift_send_tick,
     gift_tick,
@@ -534,3 +539,81 @@ def test_playtime_session_tick_does_not_duplicate_the_close_branch():
     insert_calls = [c for c in cur.calls if "insert into playtime_sessions" in c[0]]
     assert len(insert_calls) == 0
     assert any("update playtime_sessions" in c[0] for c in cur.calls)
+
+
+def test_funnel_session_full_walk_when_every_advance_roll_passes():
+    steps = funnel_session(ForcedRoll(0.0))
+    assert steps == FUNNEL_STEPS
+
+
+def test_funnel_session_stops_at_first_step_when_first_roll_drops():
+    steps = funnel_session(ForcedRoll(0.99))
+    assert steps == FUNNEL_STEPS[:1]
+
+
+def test_funnel_session_always_returns_an_ordered_prefix_of_the_steps():
+    rng = random.Random(7)
+    for _ in range(500):
+        steps = funnel_session(rng)
+        assert 1 <= len(steps) <= len(FUNNEL_STEPS)
+        assert steps == FUNNEL_STEPS[: len(steps)]
+
+
+def test_funnel_session_produces_monotonic_drop_off():
+    # Acceptance criterion (#12): ordered sequences with a realistic funnel
+    # drop-off — each step reached by no more sessions than the one before.
+    rng = random.Random(1)
+    reached = Counter()
+    for _ in range(20_000):
+        for step in funnel_session(rng):
+            reached[step] += 1
+    counts = [reached[s] for s in FUNNEL_STEPS]
+    assert counts == sorted(counts, reverse=True)
+    assert counts[-1] > 0                      # some sessions complete the funnel
+    assert counts[-1] < counts[0] // 2         # but far fewer than start it
+
+
+def test_client_events_tick_writes_one_ordered_row_per_funnel_step():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    session_id = client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [(sql, params) for sql, params in cur.calls if "insert into client_events" in sql]
+    assert len(inserts) == len(FUNNEL_STEPS)
+
+    prev_at = None
+    for i, (_, params) in enumerate(inserts):
+        occurred_at, user_id, sid, game_id, event_name, props = params
+        assert user_id == "user-1"
+        assert sid == session_id
+        assert event_name == FUNNEL_STEPS[i]
+        # store_page_view is store-wide; every later step carries the game
+        assert game_id == (None if event_name == "store_page_view" else "game-1")
+        if prev_at is not None:
+            assert occurred_at >= prev_at
+        prev_at = occurred_at
+
+    props = json.loads(inserts[0][1][5])
+    assert props["referrer"] in CLIENT_EVENT_REFERRERS
+    assert props["campaign_id"] == "campaign-1"   # 0.0 roll < CLIENT_EVENT_CAMPAIGN_CHANCE
+
+
+def test_client_events_tick_omits_campaign_id_when_roll_misses():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.99))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    assert len(inserts) == 1                      # 0.99 roll drops the funnel immediately
+    props = json.loads(inserts[0][5])
+    assert props["campaign_id"] is None
+
+
+def test_client_events_tick_handles_no_campaigns_seeded():
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), None])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    props = json.loads(inserts[0][5])
+    assert props["campaign_id"] is None

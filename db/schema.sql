@@ -176,3 +176,23 @@ create table concurrent_player_snapshots (
     recorded_at timestamptz not null default now()
 );
 create index on concurrent_player_snapshots (game_id, snapshot_at);
+
+-- One row per client-side funnel event. Shared across all analytics spokes
+-- (product funnel, marketing attribution). event_name is fixed to the 5
+-- funnel steps for now; the check is extended (not dropped) when later steps
+-- land. props is the open-ended VARIANT bag downstream — referrer,
+-- campaign_id, etc. — matching the comment-only convention used elsewhere
+-- (steam-analytics#12).
+create table client_events (
+    event_id uuid primary key default gen_random_uuid(),
+    occurred_at timestamptz not null,                 -- event time; recorded_at is when OLTP wrote the row
+    user_id uuid not null references users(id),        -- non-nullable: no pre-signup anonymous browsing
+    session_id uuid,                                   -- browsing session, distinct from playtime_sessions; nullable
+    game_id uuid references games(id),                 -- null for store-wide events (store_page_view)
+    event_name text not null check (event_name in (
+        'store_page_view', 'game_page_view', 'add_to_wishlist', 'begin_checkout', 'purchase_complete')),
+    props jsonb not null default '{}',
+    recorded_at timestamptz not null default now()
+);
+create index on client_events (user_id);
+create index on client_events (session_id);

@@ -18,11 +18,13 @@ exists — closes it (and, for gift, only then writes the fan-in
 redemption).
 """
 
+import json
 import logging
 import os
 import random
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 
@@ -59,7 +61,29 @@ EVENT_WEIGHTS = [
     ("family_share", 0.5),
     ("wishlist_item", 1.5),
     ("review", 0.8),
+    # ponytail: one tick emits a whole browsing session (1-5 rows), so the
+    # effective client_events row rate is a few x this weight. Moderate for
+    # now; #16 owns recalibrating combined throughput.
+    ("client_events", 3.0),
 ]
+
+# The 5 funnel steps, in order (steam-analytics#12). Kept in sync with the
+# client_events.event_name check constraint in db/schema.sql.
+FUNNEL_STEPS = [
+    "store_page_view",
+    "game_page_view",
+    "add_to_wishlist",
+    "begin_checkout",
+    "purchase_complete",
+]
+# P(advance from step i to step i+1). Compounding drop-off: ~55% of store
+# views reach a game page, ~17% wishlist, ~7% begin checkout, ~4.5% complete —
+# a realistic funnel shape.
+FUNNEL_ADVANCE_P = [0.55, 0.30, 0.45, 0.60]
+CLIENT_EVENT_REFERRERS = ["organic", "google", "reddit", "youtube", "steam_discovery", "email"]
+CLIENT_EVENT_CAMPAIGN_CHANCE = 0.4      # fraction of sessions carrying a campaign_id in props
+CLIENT_EVENT_STEP_MIN_SECONDS = 5
+CLIENT_EVENT_STEP_MAX_SECONDS = 300
 
 
 def pick_event_type(rng, weights=EVENT_WEIGHTS):
@@ -401,6 +425,61 @@ def review_tick(cur, clock, rng):
     return cur.fetchone()[0]
 
 
+def funnel_session(rng, advance_p=FUNNEL_ADVANCE_P):
+    """Ordered funnel steps for one browsing session: always starts at
+    FUNNEL_STEPS[0], then advances to each next step with the matching
+    probability from advance_p, stopping on the first drop-off. Returns a
+    non-empty prefix of FUNNEL_STEPS.
+    """
+    steps = [FUNNEL_STEPS[0]]
+    for p in advance_p:
+        if rng.random() >= p:
+            break
+        steps.append(FUNNEL_STEPS[len(steps)])
+    return steps
+
+
+def client_events_tick(cur, clock, rng):
+    """Emits one browsing session as an ordered run of client_events rows:
+    a random user browsing a random game, walking the funnel until they drop
+    off (funnel_session). store_page_view is store-wide (game_id null); every
+    later step carries the game. props carries the session's referrer and,
+    for ~CLIENT_EVENT_CAMPAIGN_CHANCE of sessions, a campaign_id drawn from
+    marketing_campaigns. Returns the session id.
+    """
+    cur.execute("select id from users order by random() limit 1")
+    user_id = cur.fetchone()[0]
+    cur.execute("select id from games order by random() limit 1")
+    game_id = cur.fetchone()[0]
+    cur.execute("select id from marketing_campaigns order by random() limit 1")
+    campaign_row = cur.fetchone()
+
+    campaign_id = (
+        str(campaign_row[0])
+        if campaign_row is not None and rng.random() < CLIENT_EVENT_CAMPAIGN_CHANCE
+        else None
+    )
+    props = json.dumps({
+        "referrer": rng.choice(CLIENT_EVENT_REFERRERS),
+        "campaign_id": campaign_id,
+    })
+    session_id = str(uuid.UUID(int=rng.getrandbits(128)))
+
+    base = clock()
+    elapsed = 0
+    for i, event_name in enumerate(funnel_session(rng)):
+        if i > 0:
+            elapsed += rng.randint(CLIENT_EVENT_STEP_MIN_SECONDS, CLIENT_EVENT_STEP_MAX_SECONDS)
+        step_game_id = None if event_name == "store_page_view" else game_id
+        cur.execute(
+            "insert into client_events "
+            "(occurred_at, user_id, session_id, game_id, event_name, props) "
+            "values (%s, %s, %s, %s, %s, %s::jsonb)",
+            (base + timedelta(seconds=elapsed), user_id, session_id, step_game_id, event_name, props),
+        )
+    return session_id
+
+
 EVENT_HANDLERS = {
     "purchase": purchase_tick,
     "gift": gift_tick,
@@ -412,6 +491,7 @@ EVENT_HANDLERS = {
     "family_share": family_share_tick,
     "wishlist_item": wishlist_item_tick,
     "review": review_tick,
+    "client_events": client_events_tick,
 }
 
 
