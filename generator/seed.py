@@ -22,6 +22,9 @@ _seed_env = os.environ.get("SEED_RANDOM_SEED")
 RANDOM_SEED = int(_seed_env) if _seed_env else None
 
 NULL_RATE = 0.03
+# Share of users with no first-touch campaign (organic/direct). Much higher than
+# NULL_RATE — most signups aren't paid-attributed.
+CAMPAIGN_NULL_RATE = 0.55
 BATCH_SIZE = 5000
 
 REGIONS = [
@@ -49,13 +52,21 @@ COUNTRY_WEIGHTS = [30, 10, 8, 8, 9, 9, 6, 5, 4, 3, 3, 2]
 CHANNELS = ["paid_search", "paid_social", "email", "influencer", "affiliate"]
 
 
-def generate_users(n, fake, rng):
+def generate_users(n, fake, rng, campaign_ids=()):
+    """campaign_ids: first-touch attribution pool (marketing_campaigns.id values,
+    seeded first). Each user is attributed to a uniformly random campaign or left
+    organic (CAMPAIGN_NULL_RATE). Not time-aligned to campaign start/end — a
+    coarser signal than production first-touch, fine for the analytics models."""
     rows = []
     for i in range(n):
         username = f"{fake.user_name()}_{i}"
         email = f"{fake.user_name()}{i}@{fake.free_email_domain()}"
         country = None if rng.random() < NULL_RATE else rng.choices(COUNTRIES, COUNTRY_WEIGHTS)[0]
-        rows.append((username, email, country))
+        campaign_id = (
+            None if not campaign_ids or rng.random() < CAMPAIGN_NULL_RATE
+            else rng.choice(campaign_ids)
+        )
+        rows.append((username, email, country, campaign_id))
     return rows
 
 
@@ -111,7 +122,8 @@ def connect():
 
 def insert_users(cur, rows):
     psycopg2.extras.execute_values(
-        cur, "insert into users (username, email, country) values %s", rows, page_size=BATCH_SIZE,
+        cur, "insert into users (username, email, country, campaign_id) values %s", rows,
+        page_size=BATCH_SIZE,
     )
 
 
@@ -137,13 +149,15 @@ def insert_game_prices(cur, rows):
 
 
 def insert_marketing_campaigns(cur, rows):
-    psycopg2.extras.execute_values(
+    fetched = psycopg2.extras.execute_values(
         cur,
         "insert into marketing_campaigns "
-        "(name, channel, spend_cents, currency, starts_at, ends_at) values %s",
+        "(name, channel, spend_cents, currency, starts_at, ends_at) values %s returning id",
         rows,
         page_size=BATCH_SIZE,
+        fetch=True,
     )
+    return [row[0] for row in fetched]
 
 
 def main():
@@ -155,17 +169,18 @@ def main():
     conn = connect()
     try:
         with conn, conn.cursor() as cur:
+            logging.info("seeding %d marketing_campaigns", NUM_CAMPAIGNS)
+            campaign_ids = insert_marketing_campaigns(
+                cur, generate_marketing_campaigns(NUM_CAMPAIGNS, fake, rng))
+
             logging.info("seeding %d users", NUM_USERS)
-            insert_users(cur, generate_users(NUM_USERS, fake, rng))
+            insert_users(cur, generate_users(NUM_USERS, fake, rng, campaign_ids))
 
             logging.info("seeding %d games", NUM_GAMES)
             game_ids = insert_games(cur, generate_games(NUM_GAMES, fake, rng))
 
             logging.info("seeding game_prices for %d games", len(game_ids))
             insert_game_prices(cur, generate_game_prices(game_ids, rng))
-
-            logging.info("seeding %d marketing_campaigns", NUM_CAMPAIGNS)
-            insert_marketing_campaigns(cur, generate_marketing_campaigns(NUM_CAMPAIGNS, fake, rng))
 
         logging.info(
             "done: %d users, %d games, %d game_prices rows, %d marketing_campaigns",
