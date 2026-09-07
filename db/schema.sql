@@ -18,6 +18,7 @@ create table users (
     id uuid primary key default gen_random_uuid(),
     username text not null unique,
     email text not null unique,
+    country text,                       -- ISO 3166-1 alpha-2, nullable; buyer's country, for revenue-by-region downstream (steam-analytics#11)
     created_at timestamptz not null default now()
 );
 

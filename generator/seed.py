@@ -38,6 +38,11 @@ GENRE_POOL = [
 ]
 LANGUAGE_POOL = ["English", "French", "German", "Spanish", "Japanese", "Portuguese"]
 
+# ISO 3166-1 alpha-2, roughly plausible Steam geo split. Weights need not sum to
+# 100; rng.choices normalises. Some users have no country (NULL_RATE).
+COUNTRIES = ["US", "DE", "GB", "BR", "RU", "CN", "FR", "CA", "JP", "AU", "PL", "SE"]
+COUNTRY_WEIGHTS = [30, 10, 8, 8, 9, 9, 6, 5, 4, 3, 3, 2]
+
 # Must stay in sync with the marketing_campaigns.channel check constraint in
 # db/schema.sql (extend both together). snake_case to match the
 # ownership_grants.source naming convention.
@@ -49,7 +54,8 @@ def generate_users(n, fake, rng):
     for i in range(n):
         username = f"{fake.user_name()}_{i}"
         email = f"{fake.user_name()}{i}@{fake.free_email_domain()}"
-        rows.append((username, email))
+        country = None if rng.random() < NULL_RATE else rng.choices(COUNTRIES, COUNTRY_WEIGHTS)[0]
+        rows.append((username, email, country))
     return rows
 
 
@@ -105,7 +111,7 @@ def connect():
 
 def insert_users(cur, rows):
     psycopg2.extras.execute_values(
-        cur, "insert into users (username, email) values %s", rows, page_size=BATCH_SIZE,
+        cur, "insert into users (username, email, country) values %s", rows, page_size=BATCH_SIZE,
     )
 
 
