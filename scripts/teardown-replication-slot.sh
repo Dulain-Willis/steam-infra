@@ -14,9 +14,15 @@ TUNNEL_LOG=$(mktemp)
 TUNNEL_PID=""
 cleanup() {
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
+  # aws spawns session-manager-plugin as a child that outlives the `aws` pid
+  # and keeps localPortNumber bound, breaking the next run. Kill it by port.
+  pkill -f "localPortNumber.*15432" 2>/dev/null || true
   rm -f "$TUNNEL_LOG"
 }
 trap cleanup EXIT
+
+# clear any stale plugin from a previous failed run so the bind succeeds
+pkill -f "localPortNumber.*15432" 2>/dev/null || true
 
 BASTION_ID=$(tofu output -raw bastion_instance_id)
 RDS_HOST=$(tofu output -raw rds_endpoint)
@@ -30,17 +36,17 @@ aws ssm start-session --target "$BASTION_ID" \
 TUNNEL_PID=$!
 
 for _ in $(seq 1 30); do
-  (exec 3<>/dev/tcp/localhost/15432) 2>/dev/null && exec 3<&- 3>&- && break
+  (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null && exec 3<&- 3>&- && break
   sleep 1
 done
-(exec 3<>/dev/tcp/localhost/15432) 2>/dev/null && exec 3<&- 3>&- || {
+(exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null && exec 3<&- 3>&- || {
   echo "tunnel never came up:" >&2
   cat "$TUNNEL_LOG" >&2
   exit 1
 }
 
 export PGPASSWORD="$DB_PASSWORD"
-PSQL="psql -h localhost -p 15432 -U steam_proj_admin -d steam -tA"
+PSQL="psql -h 127.0.0.1 -p 15432 -U steam_proj_admin -d steam -tA"
 
 echo "==> checking for replication slot: $SLOT_NAME"
 EXISTS=$($PSQL -c "select 1 from pg_replication_slots where slot_name = '$SLOT_NAME';")
