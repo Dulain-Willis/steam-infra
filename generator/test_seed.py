@@ -38,8 +38,8 @@ def test_generate_users_unique_username_and_email():
     Faker.seed(2)
     rows = generate_users(1000, fake, random.Random(2))
 
-    usernames = [username for username, _, _ in rows]
-    emails = [email for _, email, _ in rows]
+    usernames = [row[0] for row in rows]
+    emails = [row[1] for row in rows]
 
     assert len(usernames) == len(set(usernames)) == 1000
     assert len(emails) == len(set(emails)) == 1000
@@ -50,10 +50,31 @@ def test_generate_users_country_distribution():
     Faker.seed(2)
     rows = generate_users(2000, fake, random.Random(2))
 
-    countries = [country for _, _, country in rows]
+    countries = [row[2] for row in rows]
     assert any(c is None for c in countries)          # nullable in the data
     assert {c for c in countries if c is not None} <= set(COUNTRIES)
     assert countries.count("US") > countries.count("SE")  # weighting takes effect
+
+
+def test_generate_users_campaign_attribution():
+    fake = Faker()
+    Faker.seed(2)
+    campaign_ids = [f"camp-{i}" for i in range(40)]
+    rows = generate_users(3000, fake, random.Random(2), campaign_ids)
+
+    attributed = [row[3] for row in rows]
+    assert any(c is None for c in attributed)                 # organic share
+    assert any(c is not None for c in attributed)             # some attributed
+    assert {c for c in attributed if c is not None} <= set(campaign_ids)
+    null_share = attributed.count(None) / len(attributed)
+    assert 0.4 < null_share < 0.7                             # near CAMPAIGN_NULL_RATE
+
+
+def test_generate_users_no_campaigns_all_organic():
+    fake = Faker()
+    Faker.seed(2)
+    rows = generate_users(100, fake, random.Random(2))
+    assert all(row[3] is None for row in rows)
 
 
 def test_generate_games_null_rate_boundary_below_threshold_nulls_both():

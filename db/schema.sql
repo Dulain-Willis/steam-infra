@@ -19,6 +19,7 @@ create table users (
     username text not null unique,
     email text not null unique,
     country text,                       -- ISO 3166-1 alpha-2, nullable; buyer's country, for revenue-by-region downstream (steam-analytics#11)
+    campaign_id uuid,                    -- first-touch attribution: nullable FK to marketing_campaigns, set once at signup, never re-attributed. NULL = organic/direct. FK added below (users precedes marketing_campaigns). (steam-analytics#14)
     created_at timestamptz not null default now()
 );
 
@@ -55,6 +56,11 @@ create table marketing_campaigns (
     created_at timestamptz not null default now(),
     check (ends_at > starts_at)
 );
+
+-- First-touch signup attribution. Immutability (set once, never re-attributed)
+-- is a generator invariant, not enforced here: nothing writes users after seed.
+alter table users add constraint users_campaign_id_fkey
+    foreign key (campaign_id) references marketing_campaigns(id);
 
 -- ==================== EVENT TABLES ====================
 
