@@ -18,9 +18,9 @@ RECORD_CONTENT rather than typed columns — Debezium's own envelope
 queries record_content:payload:after:id with Snowflake's JSON path syntax.
 
 Run through the same SSM tunnel as bootstrap.sh/rds-bootstrap.md (DB_HOST
-defaults to localhost:15432); Snowflake auth reuses the RSA key pair at
-.secrets/snowflake_key.p8 already registered for the sink connector
-(scripts/create-connector-secrets.sh).
+defaults to localhost:15432); Snowflake auth reuses the RSA key pair
+registered for the sink connector (scripts/create-connector-secrets.sh) —
+SNOWFLAKE_KEY_FILE, default .secrets/snowflake_key.p8.
 """
 
 import os

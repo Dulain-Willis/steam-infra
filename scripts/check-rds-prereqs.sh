@@ -16,9 +16,15 @@ TUNNEL_LOG=$(mktemp)
 TUNNEL_PID=""
 cleanup() {
   [ -n "$TUNNEL_PID" ] && kill "$TUNNEL_PID" 2>/dev/null || true
+  # aws spawns session-manager-plugin as a child that outlives the `aws` pid
+  # and keeps localPortNumber bound, breaking the next tunnel. Kill it by port.
+  pkill -f "localPortNumber.*15432" 2>/dev/null || true
   rm -f "$TUNNEL_LOG"
 }
 trap cleanup EXIT
+
+# clear any stale plugin from a previous failed run so the bind succeeds
+pkill -f "localPortNumber.*15432" 2>/dev/null || true
 
 BASTION_ID=$(tofu output -raw bastion_instance_id)
 RDS_HOST=$(tofu output -raw rds_endpoint)

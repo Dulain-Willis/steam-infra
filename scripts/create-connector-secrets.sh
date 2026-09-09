@@ -19,11 +19,13 @@
 #       ALTER USER <user> SET RSA_PUBLIC_KEY='<contents of .pub, header/footer/newlines stripped>';
 #     Only needs doing once — re-running this script does NOT regenerate
 #     the key pair (that would desync it from what's registered in Snowflake).
+#     Set SNOWFLAKE_KEY_FILE to point at the key wherever it lives (scripts/
+#     bootstrap.sh defaults it to ~/.dbt/snowflake_analytics_key.p8).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-KEY_FILE=.secrets/snowflake_key.p8
+KEY_FILE="${SNOWFLAKE_KEY_FILE:-.secrets/snowflake_key.p8}"
 if [ ! -f "$KEY_FILE" ]; then
   echo "missing $KEY_FILE — generate the Snowflake key pair and register it first (see script header)" >&2
   exit 1
