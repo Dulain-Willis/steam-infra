@@ -56,9 +56,14 @@ spec:
     # Fresh KC v4 setup, not migrating from a classic/v3 connector — skip its
     # v3-compatibility checks instead of setting every flag they ask for.
     snowflake.streaming.validate.compatibility.with.classic: "false"
-    # Land raw JSON (RECORD_METADATA/RECORD_CONTENT) rather than mapping CDC
-    # fields to columns — no dbt/transform layer yet to consume typed columns.
-    snowflake.enable.schematization: "false"
+    # One typed column per source column, schema-evolved from the Debezium
+    # ENRS-flattened message (debezium-connector.yaml) plus __-prefixed CDC
+    # metadata columns, instead of two raw VARIANT blobs — steam-analytics#9's
+    # Staging phase needs typed columns to build on (steam-analytics#28, see
+    # docs/debezium-postgres-config.md). RECORD_METADATA (offset/partition/
+    # topic) is still written by the sink independently of schematization and
+    # stays available downstream for dedupe.
+    snowflake.enable.schematization: "true"
     key.converter: org.apache.kafka.connect.storage.StringConverter
     value.converter: org.apache.kafka.connect.json.JsonConverter
-    value.converter.schemas.enable: "false"
+    value.converter.schemas.enable: "true"

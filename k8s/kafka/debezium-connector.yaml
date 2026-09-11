@@ -47,3 +47,22 @@ spec:
     topic.creation.enable: "true"
     topic.creation.default.replication.factor: 3
     topic.creation.default.partitions: 1
+    # Flatten the Debezium envelope so the Snowflake sink can schematize
+    # (steam-analytics#9's Staging phase needs typed columns, not two VARIANT
+    # blobs — steam-analytics#28, see docs/debezium-postgres-config.md).
+    # ExtractNewRecordState (ENRS) unwraps payload.after to the top level and
+    # drops payload.before/op/ts_ms — add.fields re-adds the CDC metadata we
+    # still need as __-prefixed columns.
+    transforms: unwrap
+    transforms.unwrap.type: io.debezium.transforms.ExtractNewRecordState
+    transforms.unwrap.add.fields: op,source.ts_ms,source.lsn,source.snapshot,source.table
+    # A streaming delete has no `after` — without rewrite mode ENRS would
+    # emit a same-key null-value tombstone instead of a row, and the
+    # Snowflake sink can't schematize a null. rewrite instead emits a real
+    # row carrying __deleted=true.
+    transforms.unwrap.delete.tombstone.handling.mode: rewrite
+    transforms.unwrap.replace.null.with.default: "false"
+    # Schematization (on the sink) needs a Connect schema traveling with the
+    # message; JsonConverter carries it inline (no Schema Registry service).
+    value.converter: org.apache.kafka.connect.json.JsonConverter
+    value.converter.schemas.enable: "true"
