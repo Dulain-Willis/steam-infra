@@ -12,10 +12,12 @@ rather than driving a full generator tick: it's the simplest OLTP table to
 insert into and identify by primary key alone, and this seam only needs one
 identifiable row, not realistic event data.
 
-Snowflake schematization is disabled (#45), so rows land as raw JSON in
-RECORD_CONTENT rather than typed columns — Debezium's own envelope
-(schema + payload.after/before/op) is preserved as-is inside it, so this
-queries record_content:payload:after:id with Snowflake's JSON path syntax.
+Snowflake schematization is enabled (steam-analytics#28): the Debezium
+source connector's ExtractNewRecordState transform flattens payload.after to
+the top level before the sink lands it, so rows arrive as typed columns
+(game_id, region, currency, new_price_cents, ...) instead of a raw
+RECORD_CONTENT JSON blob — this queries those columns directly. See
+docs/debezium-postgres-config.md.
 
 Run through the same SSM tunnel as bootstrap.sh/rds-bootstrap.md (DB_HOST
 defaults to localhost:15432); Snowflake auth reuses the RSA key pair
@@ -46,6 +48,11 @@ SNOWFLAKE_KEY_FILE = os.environ.get("SNOWFLAKE_KEY_FILE", ".secrets/snowflake_ke
 
 TIMEOUT_SECONDS = float(os.environ.get("SMOKE_TEST_TIMEOUT_SECONDS", "180"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("SMOKE_TEST_POLL_INTERVAL_SECONDS", "5"))
+
+# Snowflake errno codes seen transiently while the Snowpipe Streaming sink
+# is still evolving a table's schema on its first-ever record.
+SNOWFLAKE_ERRNO_INVALID_IDENTIFIER = 904
+SNOWFLAKE_ERRNO_DOES_NOT_EXIST = 2003
 
 MARKER_REGION = "smoke_test"
 
@@ -110,16 +117,29 @@ def poll_for_row(expected, deadline):
     try:
         with conn.cursor() as cur:
             while time.time() < deadline:
-                cur.execute(
-                    "select "
-                    "  record_content:payload:after:game_id::string, "
-                    "  record_content:payload:after:region::string, "
-                    "  record_content:payload:after:currency::string, "
-                    "  record_content:payload:after:new_price_cents::int "
-                    "from price_changes "
-                    "where record_content:payload:after:id::string = %s",
-                    (expected["id"],),
-                )
+                try:
+                    cur.execute(
+                        "select game_id, region, currency, new_price_cents "
+                        "from price_changes where id = %s",
+                        (expected["id"],),
+                    )
+                except snowflake.connector.errors.ProgrammingError as exc:
+                    # On a topic's very first-ever record, the Snowpipe
+                    # Streaming sink both creates the table and evolves its
+                    # schema to match the incoming (now-schematized) message
+                    # incrementally, one column at a time. A poll landing in
+                    # that gap sees "invalid identifier" on one of the
+                    # selected columns, or "does not exist" on the table
+                    # itself, on a pipeline that's otherwise healthy. Keep
+                    # polling — a real schema problem will still fail every
+                    # attempt up to the deadline.
+                    if exc.errno in (
+                        SNOWFLAKE_ERRNO_INVALID_IDENTIFIER,
+                        SNOWFLAKE_ERRNO_DOES_NOT_EXIST,
+                    ):
+                        time.sleep(POLL_INTERVAL_SECONDS)
+                        continue
+                    raise
                 row = cur.fetchone()
                 if row is not None:
                     game_id, region, currency, new_price_cents = row
