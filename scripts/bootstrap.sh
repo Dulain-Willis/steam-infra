@@ -184,29 +184,45 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-# Brings steam-infra up from a clean `tofu destroy` state, in four stages:
+# Brings steam-infra up from a clean `tofu destroy` state, in five stages:
 #
-#   1. Infra          — one `tofu apply`: network, RDS, bastion, EKS, ECR,
+#   1. Reset Snowflake — drop the sink's tables + Snowpipe Streaming pipes.
+#                        Their committed channel offsets survive `tofu
+#                        destroy`; with snapshot.mode=always the Kafka topics
+#                        restart at offset 0 each session, so a stale offset
+#                        makes the sink skip every record. Runs first, before
+#                        any infra, so the bring-up is idempotent.
+#   2. Infra          — one `tofu apply`: network, RDS, bastion, EKS, ECR,
 #                        then the Strimzi operator.
-#   2. Schema + seed   — schema.sql + seed.py through an SSM tunnel, so the
+#   3. Schema + seed   — schema.sql + seed.py through an SSM tunnel, so the
 #                        generator never boots against an empty DB and the
 #                        Debezium connector has its tables + grant.
-#   3. CDC layer       — kubectl: Kafka cluster, Kafka Connect (in-cluster
+#   4. CDC layer       — kubectl: Kafka cluster, Kafka Connect (in-cluster
 #                        image build), Debezium source + Snowflake sink
 #                        connectors.
-#   4. Generator       — `tofu apply` for the generator (held back until seed
+#   5. Generator       — `tofu apply` for the generator (held back until seed
 #                        data exists), then an end-to-end smoke test.
 #
 # Teardown is a separate flow: drop the Debezium replication slot
-# (scripts/teardown-replication-slot.sh) *before* `tofu destroy`.
+# (scripts/teardown-replication-slot.sh) *before* `tofu destroy`. The sink
+# side is reset at Stage 1 above, not at teardown, so a skipped teardown
+# can't wedge the next run.
 
-TOTAL_STAGES=4
+TOTAL_STAGES=5
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="$REPO_ROOT/terraform"
 VENV=/tmp/steam-infra-venv
 SMOKE_VENV=/tmp/steam-infra-smoke-venv
 AWS_REGION="${AWS_REGION:-us-east-1}"
+
+# Python version the venvs are built with. The host default python3 floats
+# with the OS and has run ahead of what the pinned requirements ship wheels
+# for: on 3.14, snowflake-connector-python==3.12.3 and its capped cffi<2 fall
+# back to sdist builds that need python3-dev + libffi-dev, so the smoke-test
+# venv dies with "Python.h: No such file". ensure_venv pins this instead
+# (via uv, which fetches it if missing; see there for the no-uv case).
+VENV_PYTHON="${VENV_PYTHON:-3.12}"
 
 # Snowflake RSA private key for the sink connector + smoke test. Lives
 # outside the repo; override by exporting SNOWFLAKE_KEY_FILE before running.
@@ -244,19 +260,31 @@ nstep()   { printf '\n  %s%s.%s %s\n' "$BOLD" "$1" "$RESET" "$2"; }
 nsub()    { printf '     %s\n' "$1"; }
 nbullet() { printf '     %s•%s %s\n' "$BLUE" "$RESET" "$1"; }
 
-# ensure_venv DIR REQ_FILE  creates DIR as a venv (rebuilding it if a previous
-# run left one without pip — Debian/Ubuntu ship venv without pip until
-# python3-venv is installed) and installs REQ_FILE into it.
+# ensure_venv DIR REQ_FILE  (re)creates DIR as a venv on Python $VENV_PYTHON
+# and installs REQ_FILE into it.
+#
+# Prefers uv: it uses a matching interpreter already on the system, or fetches
+# a standalone one (~100MB, cached in ~/.local/share/uv, downloaded once) when
+# none is present — so the venv never depends on what the host's python3
+# happens to be. Set UV_PYTHON_DOWNLOADS=never to forbid the fetch.
+#
+# Without uv, falls back to `pythonX.Y -m venv` and needs that exact
+# interpreter on PATH (Debian/Ubuntu: apt install pythonX.Y pythonX.Y-venv);
+# a missing pip in the fresh venv means the -venv package isn't installed.
 ensure_venv() {
   local dir="$1" reqs="$2"
-  if [[ ! -x "$dir/bin/pip" ]]; then
-    rm -rf "$dir"
-    python3 -m venv "$dir" || { warn "python3 -m venv failed — install python3-venv, then re-run"; exit 1; }
+  rm -rf "$dir"
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --python "$VENV_PYTHON" "$dir" >/dev/null
+    uv pip install -q --python "$dir/bin/python" -r "$reqs"
+    return
   fi
-  if [[ ! -x "$dir/bin/pip" ]]; then
-    warn "venv has no pip — Debian/Ubuntu split it out; run 'sudo apt install python3-venv' and re-run"
-    exit 1
-  fi
+  local py="python${VENV_PYTHON}"
+  command -v "$py" >/dev/null 2>&1 \
+    || { warn "no uv, and $py not on PATH — install it (apt install $py ${py}-venv) or install uv"; exit 1; }
+  "$py" -m venv "$dir" || { warn "$py -m venv failed — install ${py}-venv, then re-run"; exit 1; }
+  [[ -x "$dir/bin/pip" ]] \
+    || { warn "venv has no pip — Debian/Ubuntu split it out; run 'sudo apt install ${py}-venv' and re-run"; exit 1; }
   "$dir/bin/pip" install -q -r "$reqs"
 }
 
@@ -336,7 +364,26 @@ fi
 say "preflight OK — tools, Snowflake key, AWS creds all present."
 pause "Start the bring-up?"
 
-# ── Stage 1: infra ───────────────────────────────────────────────────────
+# ── Stage 1: reset Snowflake sink state ──────────────────────────────────
+stage "Reset Snowflake sink state"
+say "Snowpipe Streaming channels and their committed offsets live in"
+say "Snowflake and survive 'tofu destroy'. snapshot.mode=always restarts the"
+say "Kafka topics at offset 0 every session, so a leftover channel offset"
+say "makes the sink skip every record — 0 rows in Snowflake, smoke test fails."
+say "Dropping the sink's tables + pipes now lets Stage 4 recreate them clean."
+say ""
+
+nstep 1 "building the venv for the Snowflake client..."
+ensure_venv "$SMOKE_VENV" "$REPO_ROOT/scripts/requirements-smoke-test.txt"
+
+nstep 2 "dropping sink tables + Snowpipe Streaming pipes (idempotent)..."
+"$SMOKE_VENV/bin/python" "$REPO_ROOT/scripts/reset-snowflake-sink.py"
+
+say ""
+printf '  %s✓%s snowflake sink state clean\n' "$GREEN" "$RESET"
+pause "Continue to infra?"
+
+# ── Stage 2: infra ───────────────────────────────────────────────────────
 stage "Infra"
 say "One 'tofu apply'. EKS node groups are the slow part — budget 15-20 min."
 say "Nothing runs on the cluster yet."
@@ -368,7 +415,7 @@ say ""
 printf '  %s✓%s infra up!\n' "$GREEN" "$RESET"
 pause "Continue to schema + seed?"
 
-# ── Stage 2: schema + seed ───────────────────────────────────────────────
+# ── Stage 3: schema + seed ───────────────────────────────────────────────
 stage "Schema + seed"
 say "The generator crash-loops against empty users/games; the Debezium"
 say "connector needs the schema + rds_replication grant. Both land here."
@@ -453,7 +500,7 @@ say "closing tunnel..."
 close_rds_tunnel
 pause "Continue to the CDC layer?"
 
-# ── Stage 3: CDC layer ───────────────────────────────────────────────────
+# ── Stage 4: CDC layer ───────────────────────────────────────────────────
 stage "CDC layer — Kafka, Connect, connectors"
 say "All applied with kubectl. The Strimzi operator turns these specs into"
 say "running pods."
@@ -527,7 +574,7 @@ done
 [[ -n "$_health_ok" ]] || { warn "connectors did not all reach RUNNING"; exit 1; }
 pause "Continue to the generator + smoke test?"
 
-# ── Stage 4: generator + smoke test ──────────────────────────────────────
+# ── Stage 5: generator + smoke test ──────────────────────────────────────
 stage "Generator + end-to-end smoke test"
 say "The generator is applied last so it only ever boots against a seeded DB."
 say ""
@@ -556,3 +603,4 @@ say "resources (EKS is the expensive one — a full 'tofu destroy' is the reset)
 note "  aws ec2 stop-instances --instance-ids \$(tofu -chdir=terraform output -raw generator_instance_id)"
 note "  aws rds stop-db-instance --db-instance-identifier steam-infra"
 say "Teardown: run scripts/teardown-replication-slot.sh BEFORE 'tofu destroy'."
+note "  (the Snowflake sink is reset at Stage 1 of the next bring-up, not here)"

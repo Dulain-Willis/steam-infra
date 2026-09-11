@@ -45,9 +45,14 @@ data "aws_ami" "al2023" {
   most_recent = true
   owners      = ["amazon"]
 
+  # Must stay on the *standard* AL2023 image: al2023-ami-minimal-* ships
+  # without amazon-ssm-agent, so a minimal bastion never registers with SSM
+  # and bootstrap.sh Stage 2 dies at "bastion SSM agent never came online".
+  # "al2023-ami-2023.*" excludes both -minimal- and -ecs-hvm-; pin the kernel
+  # so most_recent doesn't flip between same-date 6.1/6.12/6.18 builds.
   filter {
     name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    values = ["al2023-ami-2023.*-kernel-6.1-arm64"]
   }
 }
 
