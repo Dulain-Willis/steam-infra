@@ -37,18 +37,19 @@ aws ssm start-session --target "$BASTION_ID" \
   >"$TUNNEL_LOG" 2>&1 &
 TUNNEL_PID=$!
 
-for _ in $(seq 1 30); do
-  (exec 3<>/dev/tcp/localhost/15432) 2>/dev/null && exec 3<&- 3>&- && break
+# SSM data-channel handshake routinely takes 30-40s on a fresh session.
+for _ in $(seq 1 90); do
+  (exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null && exec 3<&- 3>&- && break
   sleep 1
 done
-(exec 3<>/dev/tcp/localhost/15432) 2>/dev/null && exec 3<&- 3>&- || {
+(exec 3<>/dev/tcp/127.0.0.1/15432) 2>/dev/null && exec 3<&- 3>&- || {
   echo "tunnel never came up:" >&2
   cat "$TUNNEL_LOG" >&2
   exit 1
 }
 
 export PGPASSWORD="$DB_PASSWORD"
-PSQL="psql -h localhost -p 15432 -U steam_proj_admin -d steam -tA"
+PSQL="psql -h 127.0.0.1 -p 15432 -U steam_proj_admin -d steam -tA"
 
 echo "==> checking rds.logical_replication"
 WAL_LEVEL=$($PSQL -c "show wal_level;")

@@ -302,30 +302,35 @@ trap cleanup EXIT
 
 # open_rds_tunnel BASTION_ID RDS_HOST forwards localhost:15432 -> RDS:5432
 # through the bastion over SSM (RDS has no public IP). Polls the SSM CLI's own
-# "Waiting for connections" line rather than sleeping a fixed amount.
+# "Waiting for connections" line rather than sleeping a fixed amount. The SSM
+# data-channel handshake routinely takes 30-40s on a fresh session, so each
+# attempt waits up to 90s, and a dead session (bad handshake, transient AWS
+# error) is retried a few times before giving up.
 open_rds_tunnel() {
-  local bastion_id="$1" rds_host="$2" i
-  # Clear any session-manager-plugin still holding port 15432 from an earlier
-  # tunnel — the helper scripts we call (check-rds-prereqs.sh) don't kill
-  # their own plugin child, only the `aws` parent.
-  pkill -f "localPortNumber.*15432" 2>/dev/null || true
-  _TUNNEL_LOG=$(mktemp)
-  aws ssm start-session --target "$bastion_id" \
-    --document-name AWS-StartPortForwardingSessionToRemoteHost \
-    --parameters "{\"host\":[\"$rds_host\"],\"portNumber\":[\"5432\"],\"localPortNumber\":[\"15432\"]}" \
-    >"$_TUNNEL_LOG" 2>&1 &
-  _TUNNEL_PID=$!
-  for i in $(seq 1 30); do
-    grep -q "Waiting for connections" "$_TUNNEL_LOG" && return 0
-    if ! kill -0 "$_TUNNEL_PID" 2>/dev/null; then
-      warn "SSM session exited before the tunnel opened:"
-      cat "$_TUNNEL_LOG" >&2
-      return 1
-    fi
-    sleep 1
+  local bastion_id="$1" rds_host="$2" attempt i
+  for attempt in 1 2 3; do
+    # Clear any session-manager-plugin still holding port 15432 from an earlier
+    # tunnel — the helper scripts we call (check-rds-prereqs.sh) don't kill
+    # their own plugin child, only the `aws` parent.
+    pkill -f "localPortNumber.*15432" 2>/dev/null || true
+    _TUNNEL_LOG=$(mktemp)
+    aws ssm start-session --target "$bastion_id" \
+      --document-name AWS-StartPortForwardingSessionToRemoteHost \
+      --parameters "{\"host\":[\"$rds_host\"],\"portNumber\":[\"5432\"],\"localPortNumber\":[\"15432\"]}" \
+      >"$_TUNNEL_LOG" 2>&1 &
+    _TUNNEL_PID=$!
+    for i in $(seq 1 90); do
+      grep -q "Waiting for connections" "$_TUNNEL_LOG" && return 0
+      kill -0 "$_TUNNEL_PID" 2>/dev/null || break
+      sleep 1
+    done
+    kill "$_TUNNEL_PID" 2>/dev/null || true
+    warn "tunnel attempt $attempt/3 did not come up:"
+    cat "$_TUNNEL_LOG" >&2
+    rm -f "$_TUNNEL_LOG"
+    sleep 5
   done
-  warn "tunnel never came up:"
-  cat "$_TUNNEL_LOG" >&2
+  warn "tunnel never came up after 3 attempts"
   return 1
 }
 
