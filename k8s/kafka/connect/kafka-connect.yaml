@@ -55,8 +55,7 @@ spec:
   build:
     output:
       type: docker
-      # Replace <account-id> with `tofu output kafka_connect_ecr_repository_url`.
-      image: <account-id>.dkr.ecr.us-east-1.amazonaws.com/steam-infra-kafka-connect:latest
+      image: 497675597225.dkr.ecr.us-east-1.amazonaws.com/steam-infra-kafka-connect:latest
       pushSecret: ecr-registry-credentials
     plugins:
       - name: debezium-postgres-connector
