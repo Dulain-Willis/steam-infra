@@ -6,13 +6,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: oci://quay.io/strimzi-helm
-    chart: strimzi-kafka-operator
-    targetRevision: 1.2.0
-    helm:
-      values: |
-        watchNamespaces:
-          - kafka
+    repoURL: https://github.com/Dulain-Willis/steam-infra.git
+    targetRevision: main
+    path: k8s/strimzi-operator
   destination:
     server: https://kubernetes.default.svc
     namespace: kafka
