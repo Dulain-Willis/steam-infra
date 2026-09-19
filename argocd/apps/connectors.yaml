@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: connectors
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Dulain-Willis/steam-infra.git
+    targetRevision: issue-69-argocd-gitops
+    path: k8s/kafka/connectors
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true

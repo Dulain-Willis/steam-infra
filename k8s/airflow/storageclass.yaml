@@ -1,0 +1,23 @@
+# Default StorageClass for the airflow Helm release's PVCs (Postgres, Redis,
+# triggerer/worker logs) — #25. Applied via kubectl, not Terraform (IaC
+# boundary #28): this is a native k8s object, not a Helm release, and this
+# repo deliberately doesn't carry the `kubernetes` Terraform provider.
+#
+# Explicit provisioner ebs.csi.aws.com (the aws-ebs-csi-driver EKS addon,
+# terraform/eks.tf) rather than the pre-existing `gp2` class, which uses the
+# legacy in-tree provisioner (kubernetes.io/aws-ebs) — removed from the
+# kubelet itself on this cluster's Kubernetes version, and only still
+# functional (on a cluster with the CSI driver installed) via a migration
+# shim. gp3 over gp2: cheaper, faster, and natively CSI-supported.
+#
+# Requires: aws-ebs-csi-driver EKS addon active (terraform/eks.tf).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-csi-default
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
