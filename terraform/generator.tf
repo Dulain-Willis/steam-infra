@@ -46,15 +46,15 @@ resource "aws_instance" "generator" {
   # auto-decompresses gzip user_data, so this buys headroom without
   # restructuring the inline-source mechanism itself.
   user_data_base64 = base64gzip(templatefile("${path.module}/generator_user_data.sh.tpl", {
-    dockerfile       = file("${path.module}/../generator/Dockerfile")
-    requirements     = file("${path.module}/../generator/requirements.txt")
-    generator_py     = file("${path.module}/../generator/generator.py")
-    dirty_py         = file("${path.module}/../generator/dirty.py")
-    db_host          = aws_db_instance.main.address
-    db_port          = "5432"
-    db_name          = aws_db_instance.main.db_name
-    db_user          = aws_db_instance.main.username
-    db_password      = random_password.db.result
+    dockerfile   = file("${path.module}/../generator/Dockerfile")
+    requirements = file("${path.module}/../generator/requirements.txt")
+    generator_py = file("${path.module}/../generator/generator.py")
+    dirty_py     = file("${path.module}/../generator/dirty.py")
+    db_host      = aws_db_instance.main.address
+    db_port      = "5432"
+    db_name      = aws_db_instance.main.db_name
+    db_user      = aws_db_instance.main.username
+    db_password  = random_password.db.result
     # Calibrated (#16) to land combined event-table throughput at ~1-3
     # events/sec against the seeded 50k-user/3k-game catalog. See
     # docs/generator-runbook.md for the measured run.
