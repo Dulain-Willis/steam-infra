@@ -8,6 +8,8 @@ resource "helm_release" "airflow" {
   create_namespace = true
   timeout          = 900
 
+  values = [file("${path.module}/../k8s/airflow/values.yaml")]
+
   # Default wait=true blocks on every Deployment/StatefulSet reaching Ready
   # before Helm runs post-install hooks. This chart's migration/create-user
   # jobs ARE post-install hooks, but the scheduler/webserver/worker pods'
