@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/Dulain-Willis/steam-infra.git
-    targetRevision: issue-69-argocd-gitops
+    targetRevision: main
     path: k8s/kafka/connect
   destination:
     server: https://kubernetes.default.svc

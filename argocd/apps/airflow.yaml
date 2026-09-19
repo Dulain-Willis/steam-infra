@@ -13,7 +13,7 @@ spec:
         valueFiles:
           - $values/k8s/airflow/values.yaml
     - repoURL: https://github.com/Dulain-Willis/steam-infra.git
-      targetRevision: issue-69-argocd-gitops
+      targetRevision: main
       ref: values
   destination:
     server: https://kubernetes.default.svc
