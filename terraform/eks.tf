@@ -19,6 +19,16 @@ module "eks" {
   authentication_mode                      = "API"
   enable_cluster_creator_admin_permissions = true
 
+  # Needed so the EBS CSI driver addon below can assume an IAM role via a
+  # k8s service account (Airflow's Postgres/Redis PVCs need this to bind).
+  enable_irsa = true
+
+  cluster_addons = {
+    aws-ebs-csi-driver = {
+      service_account_role_arn = module.ebs_csi_irsa.iam_role_arn
+    }
+  }
+
   eks_managed_node_groups = {
     system = {
       instance_types = ["t3.medium"]
@@ -55,5 +65,20 @@ module "eks" {
 
   tags = {
     Name = "steam-infra"
+  }
+}
+
+module "ebs_csi_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name             = "ebs-csi-driver"
+  attach_ebs_csi_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:ebs-csi-controller-sa"]
+    }
   }
 }

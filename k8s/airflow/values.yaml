@@ -1,0 +1,51 @@
+# Env vars for the airflow Helm release (terraform/airflow.tf). Chart's
+# top-level `env` applies to scheduler/dag-processor/worker/triggerer, but
+# its JSON schema only allows {name, value} -- no valueFrom/secretKeyRef.
+# extraEnv is a raw templated string, unvalidated, so secretKeyRef works there.
+
+# Custom image (bakes in the steam-analytics dbt project, see
+# steam-orchestration repo). Previously applied via a manual `helm upgrade
+# --set`, never captured here -- moving it into this file so a Terraform
+# apply doesn't revert the release back to stock apache/airflow.
+defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
+defaultAirflowTag: 72c514e83b1818bc861c0d095e2797f70057d372
+
+extraEnv: |
+  - name: SNOWFLAKE_ACCOUNT
+    valueFrom:
+      secretKeyRef:
+        name: snowflake-account
+        key: account
+
+  - name: SNOWFLAKE_USER
+    value: DULAIN 
+
+  - name: SNOWFLAKE_ROLE
+    value: ACCOUNTADMIN
+
+  - name: SNOWFLAKE_WAREHOUSE
+    value: COMPUTE_WH
+
+  - name: SNOWFLAKE_DATABASE
+    value: STEAM_PROJECT
+
+  - name: PIPELINE_ALERT_EMAIL
+    valueFrom:
+      secretKeyRef:
+        name: airflow-alert-email
+        key: email
+
+  - name: SNOWFLAKE_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: snowflake-keypair
+        key: private_key
+
+# dbt ls against Snowflake (cold TLS+auth+full manifest parse) exceeds the
+# chart's default 30s dagbag_import_timeout -- DAG never renders, no error
+# in dbt itself. Bumped, not a secret/auth problem.
+config:
+  core:
+    dagbag_import_timeout: '120'
+  celery:
+    worker_concurrency: '2'

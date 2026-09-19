@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-cluster
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Dulain-Willis/steam-infra.git
+    targetRevision: main
+    path: k8s/kafka/cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kafka
