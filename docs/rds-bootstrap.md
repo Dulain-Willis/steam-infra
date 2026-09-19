@@ -63,6 +63,18 @@ Ctrl+C in terminal 1.
 
 ## Tear down
 
+Drop the replication slot Debezium created **before** `tofu destroy` — it
+isn't cleaned up automatically and pins WAL on the RDS instance
+indefinitely otherwise, growing storage until the instance hits
+`storage-full` and refuses all connections (`docs/debezium-postgres-config.md`):
+
+```bash
+scripts/teardown-replication-slot.sh
+```
+
+Opens its own SSM tunnel (no manual tunnel setup needed) and is a no-op if
+the slot's already gone.
+
 ```bash
 tofu destroy
 ```

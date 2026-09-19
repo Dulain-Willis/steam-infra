@@ -56,7 +56,11 @@ resource "aws_db_instance" "main" {
   engine                 = "postgres"
   engine_version         = data.aws_rds_engine_version.postgres.version
   instance_class         = "db.t4g.micro"
-  allocated_storage      = 20
+  # Bumped from 20 to 22 GB after a replication slot's retained WAL (not
+  # table data -- actual DB size was ~108MB) drove the instance to
+  # storage-full and refused all connections. Dropping the stale slot freed
+  # the WAL, but AWS never lets allocated storage shrink back down.
+  allocated_storage      = 22
   storage_type           = "gp3"
   db_name                = "steam"
   username               = "steam_proj_admin"
