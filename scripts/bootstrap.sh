@@ -545,7 +545,7 @@ say ""
 printf '     %s✓%s rds pre-checks are good!\n' "$GREEN" "$RESET"
 
 say "applying strimzi kafka dual-role's yaml..."
-kubectl apply -f "$REPO_ROOT/k8s/kafka/kafka-cluster.yaml"
+kubectl apply -f "$REPO_ROOT/k8s/kafka/cluster/kafka-cluster.yaml"
 say "waiting for the Kafka cluster to be Ready (3 brokers, a few minutes)..."
 kubectl wait kafka/steam-infra -n kafka --for=condition=Ready --timeout=600s
 
@@ -557,7 +557,7 @@ kubectl create secret docker-registry ecr-registry-credentials -n kafka \
   --docker-password="$(aws ecr get-login-password --region "$AWS_REGION")" \
   --dry-run=client -o yaml | kubectl apply -f -
 sed "s|<account-id>.dkr.ecr.us-east-1.amazonaws.com/steam-infra-kafka-connect|$ECR_REPO|" \
-  "$REPO_ROOT/k8s/kafka/kafka-connect.yaml" | kubectl apply -f -
+  "$REPO_ROOT/k8s/kafka/connect/kafka-connect.yaml" | kubectl apply -f -
 kubectl wait kafkaconnect/steam-infra -n kafka --for=condition=Ready --timeout=900s
 
 say "wiring connector secrets (rds-credentials, snowflake-keypair)..."
@@ -565,10 +565,10 @@ say "wiring connector secrets (rds-credentials, snowflake-keypair)..."
 
 say "applying Debezium source connector yaml..."
 sed "s|<rds-endpoint>|$(tf output -raw rds_endpoint)|" \
-  "$REPO_ROOT/k8s/kafka/debezium-connector.yaml" | kubectl apply -f -
+  "$REPO_ROOT/k8s/kafka/connectors/debezium-connector.yaml" | kubectl apply -f -
 
 say "applying Snowflake sink connector yaml..."
-kubectl apply -f "$REPO_ROOT/k8s/kafka/snowflake-connector.yaml"
+kubectl apply -f "$REPO_ROOT/k8s/kafka/connectors/snowflake-connector.yaml"
 
 say "verifying connector health (retrying while they reach RUNNING)..."
 _health_ok=""
