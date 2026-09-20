@@ -2,13 +2,11 @@
 # top-level `env` applies to scheduler/dag-processor/worker/triggerer, but
 # its JSON schema only allows {name, value} -- no valueFrom/secretKeyRef.
 # extraEnv is a raw templated string, unvalidated, so secretKeyRef works there.
-
-# Custom image (bakes in the steam-analytics dbt project, see
-# steam-orchestration repo). Previously applied via a manual `helm upgrade
-# --set`, never captured here -- moving it into this file so a Terraform
-# apply doesn't revert the release back to stock apache/airflow.
-defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
-defaultAirflowTag: 72c514e83b1818bc861c0d095e2797f70057d372
+#
+# Image (defaultAirflowRepository/defaultAirflowTag) lives in
+# values-image.yaml, not here -- that file is machine-owned (bumped by a bot
+# commit from steam-orchestration's CI on every new image build) and kept
+# separate so the bot's commits never touch anything hand-maintained below.
 
 extraEnv: |
   - name: SNOWFLAKE_ACCOUNT

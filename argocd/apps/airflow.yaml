@@ -12,6 +12,7 @@ spec:
       helm:
         valueFiles:
           - $values/k8s/airflow/values.yaml
+          - $values/k8s/airflow/values-image.yaml
     - repoURL: https://github.com/Dulain-Willis/steam-infra.git
       targetRevision: main
       ref: values
