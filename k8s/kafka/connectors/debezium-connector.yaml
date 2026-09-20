@@ -29,9 +29,7 @@ spec:
     database.user: "${secrets:kafka/rds-credentials:username}"
     database.password: "${secrets:kafka/rds-credentials:password}"
     plugin.name: pgoutput
-    # No persisted offsets between sessions (#27) — every start takes a
-    # fresh full snapshot instead of resuming, see docs/debezium-postgres-config.md.
-    snapshot.mode: always
+    snapshot.mode: initial
     slot.name: debezium_steam
     publication.name: debezium_steam
     publication.autocreate.mode: filtered
@@ -47,12 +45,6 @@ spec:
     topic.creation.enable: "true"
     topic.creation.default.replication.factor: 3
     topic.creation.default.partitions: 1
-    # Flatten the Debezium envelope so the Snowflake sink can schematize
-    # (steam-analytics#9's Staging phase needs typed columns, not two VARIANT
-    # blobs — steam-analytics#28, see docs/debezium-postgres-config.md).
-    # ExtractNewRecordState (ENRS) unwraps payload.after to the top level and
-    # drops payload.before/op/ts_ms — add.fields re-adds the CDC metadata we
-    # still need as __-prefixed columns.
     transforms: unwrap
     transforms.unwrap.type: io.debezium.transforms.ExtractNewRecordState
     transforms.unwrap.add.fields: op,source.ts_ms,source.lsn,source.snapshot,source.table

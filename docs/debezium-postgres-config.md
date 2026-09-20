@@ -11,11 +11,13 @@ Use `plugin.name: pgoutput` on the connector config. RDS Postgres only supports 
 - Custom (non-default) DB parameter group with `rds.logical_replication = 1`. This is what turns on `wal_level=logical` on RDS — you can't set `wal_level` directly like on a self-hosted box. **Changing this requires an instance reboot.**
 - Grant the connecting Postgres user replication access: `GRANT rds_replication TO <user>;` (RDS's substitute for the superuser-only `REPLICATION` privilege), plus normal `SELECT` on the captured tables.
 
-## Snapshot mode: `always`
+## Snapshot mode: `initial`
 
-Set `snapshot.mode: always`. This project's design ([#27](https://github.com/Dulain-Willis/steam-infra/issues/27)) accepts losing Kafka/Debezium state every time the EKS cluster is torn down between sessions — there's no persisted offset to resume from. `always` makes Debezium re-snapshot the full table set every time it starts, matching that design instead of silently doing nothing under an incremental-resume mode with no prior offset.
+Set `snapshot.mode: initial`. Kafka itself (including `connect-cluster-offsets`) is torn down with the rest of the EKS-level stack every session ([#27](https://github.com/Dulain-Willis/steam-infra/issues/27)) — there's never a stored offset to resume from at the start of a new session, so the first connector start still always takes a full snapshot. `initial` only changes behavior *within* a live session: if the connector CR gets deleted/recreated (whether by hand or by ArgoCD self-heal) while Kafka is still up, Debezium resumes from its stored offset instead of re-snapshotting all 16 tables again.
 
-**If this changes** (e.g. persistent storage gets added later so state survives teardown), this needs to move to `snapshot.mode: initial` and the slot-cleanup step below needs to stop running on every teardown, not just on a real decommission.
+Previously this was `snapshot.mode: always`, which re-snapshot on every restart regardless — including in-session ones. That repeatedly re-triggered the Snowflake sink's stale-offset bug (see `docs/debezium-connect-slot-npe.md`) every time the connector had to be recreated to clear a transient issue, which is a bad tradeoff for a real gain: `always` only ever mattered for the session-boundary case, and that case already gets a fresh snapshot for free once Kafka itself is torn down.
+
+**This does not change the teardown story below** — Kafka's own offset topic is gone after `tofu destroy` either way, so the replication slot still needs explicit cleanup on every teardown, not just on a decommission.
 
 ## Replication slot cleanup on teardown
 
