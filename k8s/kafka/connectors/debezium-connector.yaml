@@ -15,7 +15,7 @@
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaConnector
 metadata:
-  name: debezium-postgres-source-v2
+  name: debezium-postgres-source
   namespace: kafka
   labels:
     strimzi.io/cluster: steam-infra
@@ -32,14 +32,8 @@ spec:
     # No persisted offsets between sessions (#27) — every start takes a
     # fresh full snapshot instead of resuming, see docs/debezium-postgres-config.md.
     snapshot.mode: always
-    # Renamed slot/publication/connector after `debezium_steam` was left in a
-    # bad state by repeated pause/resume/delete/recreate cycles during an RDS
-    # incident recovery — Kafka Connect's AbstractHerder.maybeAddConfigErrors
-    # NPEs on validate() for that specific slot regardless of config content
-    # (confirmed: identical config under a throwaway slot name validates fine,
-    # #75). New slot name sidesteps the corrupted state.
-    slot.name: debezium_steam_v2
-    publication.name: debezium_steam_v2
+    slot.name: debezium_steam
+    publication.name: debezium_steam
     publication.autocreate.mode: filtered
     topic.prefix: steam
     schema.include.list: public
