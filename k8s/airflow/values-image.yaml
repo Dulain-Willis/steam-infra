@@ -4,4 +4,4 @@
 # new image build -- kept in its own file, separate from values.yaml, so
 # that automated commit only ever touches these two lines.
 defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
-defaultAirflowTag: 216b8b76db24d6cf60be942b5d60f4d8192b87e6
+defaultAirflowTag: f9a352efd33bc882679e4b61a4199d226e155ee1
