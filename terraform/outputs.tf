@@ -15,6 +15,14 @@ output "db_password" {
   sensitive = true
 }
 
+output "db_username" {
+  value = aws_db_instance.main.username
+}
+
+output "db_name" {
+  value = aws_db_instance.main.db_name
+}
+
 output "eks_cluster_name" {
   value = module.eks.cluster_name
 }

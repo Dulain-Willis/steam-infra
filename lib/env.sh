@@ -40,6 +40,23 @@ export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
 
 tf() { tofu -chdir="$TF_DIR" "$@"; }
 
+# Resources that survive a full teardown (the tfstate bucket has
+# prevent_destroy = true). Shared by teardown Stage 5's destroy exclusions
+# and bring-up Stage 1's leftover detection — both need "is anything left
+# besides the bucket itself".
+TFSTATE_RESOURCES=(
+  aws_s3_bucket.tfstate
+  aws_s3_bucket_versioning.tfstate
+  aws_s3_bucket_server_side_encryption_configuration.tfstate
+  aws_s3_bucket_public_access_block.tfstate
+)
+
+# tf_leftovers: prints tofu state entries beyond the tfstate bucket (empty if
+# none). Requires `tf` (this file) and a prior `tf init`.
+tf_leftovers() {
+  tf state list 2>/dev/null | grep -v '^data\.' | grep -vFxf <(printf '%s\n' "${TFSTATE_RESOURCES[@]}") || true
+}
+
 # Values a person copying the repo must supply — see .env.example.
 REQUIRED_ENV_VARS=(SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY_PATH AIRFLOW_ALERT_EMAIL)
 
