@@ -13,7 +13,7 @@ source "$REPO_ROOT/lib/output.sh"
 # shellcheck source=lib/env.sh
 source "$REPO_ROOT/lib/env.sh"
 
-stage 1 2 "Preflight"
+stage 1 3 "Preflight"
 
 missing=()
 for bin in tofu aws kubectl uv jq psql session-manager-plugin; do
