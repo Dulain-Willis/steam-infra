@@ -13,17 +13,11 @@ source "$REPO_ROOT/lib/env.sh"
 
 stage 5 6 "tofu destroy"
 
-TFSTATE_RESOURCES=(
-  aws_s3_bucket.tfstate
-  aws_s3_bucket_versioning.tfstate
-  aws_s3_bucket_server_side_encryption_configuration.tfstate
-  aws_s3_bucket_public_access_block.tfstate
-)
 EXCLUDES=()
 for r in "${TFSTATE_RESOURCES[@]}"; do EXCLUDES+=(-exclude="$r"); done
 
 nstep 1 "checking for resources left to destroy..."
-remaining=$(tf state list 2>/dev/null | grep -v '^data\.' | grep -vFxf <(printf '%s\n' "${TFSTATE_RESOURCES[@]}") || true)
+remaining=$(tf_leftovers)
 if [[ -z "$remaining" ]]; then
   skip "nothing left in state except the tfstate bucket"
 fi
@@ -32,7 +26,7 @@ nstep 2 "running tofu destroy (excluding the tfstate bucket)..."
 run_step "tofu destroy" tf destroy -auto-approve "${EXCLUDES[@]}"
 
 nstep 3 "verifying only the tfstate bucket remains in state..."
-remaining=$(tf state list 2>/dev/null | grep -v '^data\.' | grep -vFxf <(printf '%s\n' "${TFSTATE_RESOURCES[@]}") || true)
+remaining=$(tf_leftovers)
 if [[ -n "$remaining" ]]; then
   warn "resources still in state:"
   printf '%s\n' "$remaining" >&2
