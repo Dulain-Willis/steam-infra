@@ -55,10 +55,16 @@ config:
 # ArgoCD only runs PostSync hooks once every Sync-phase resource is Healthy --
 # and the scheduler/api-server/dag-processor Deployments can never go Healthy
 # because their wait-for-airflow-migrations init container blocks on this same
-# job. An explicit argocd.argoproj.io/hook annotation takes precedence over
-# the translated Helm hook (ArgoCD docs), so this moves it to PreSync and
-# breaks the deadlock. `airflow db migrate` is idempotent, so re-running it
-# every sync is harmless.
+# job (deadlock). PreSync doesn't work either: it runs *before* Sync-phase
+# resources, so the job's own ServiceAccount doesn't exist yet
+# ("serviceaccount ... not found", retried forever). An explicit
+# argocd.argoproj.io/hook annotation takes precedence over the translated
+# Helm hook (ArgoCD docs) -- overriding it to Sync makes the job a plain
+# Sync-phase resource, applied in the same wave as everything else (including
+# its ServiceAccount) instead of gated on a phase transition. The Deployments'
+# init containers still crash-loop a few times until the job completes, but
+# that resolves itself on their normal backoff -- no deadlock. `airflow db
+# migrate` is idempotent, so re-running it every sync is harmless.
 migrateDatabaseJob:
   jobAnnotations:
-    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook: Sync
