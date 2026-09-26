@@ -16,13 +16,13 @@ source "$REPO_ROOT/lib/env.sh"
 stage 1 3 "Preflight"
 
 missing=()
-for bin in tofu aws kubectl uv jq psql session-manager-plugin; do
+for bin in tofu aws kubectl helm uv jq psql session-manager-plugin; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if (( ${#missing[@]} )); then
   fail "missing required tools: ${missing[*]}"
 fi
-ok "required tools present: tofu, aws, kubectl, uv, jq, psql, session-manager-plugin"
+ok "required tools present: tofu, aws, kubectl, helm, uv, jq, psql, session-manager-plugin"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   fail "AWS credentials not working (aws sts get-caller-identity failed) — configure your AWS profile/SSO session."

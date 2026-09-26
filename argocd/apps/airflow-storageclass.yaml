@@ -1,17 +1,17 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: kafka-connect
+  name: airflow-storageclass
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/Dulain-Willis/steam-infra.git
     targetRevision: main
-    path: k8s/kafka/connect
+    path: k8s/airflow/storageclass
   destination:
     server: https://kubernetes.default.svc
-    namespace: kafka
+    namespace: airflow
   syncPolicy:
     automated:
       selfHeal: true

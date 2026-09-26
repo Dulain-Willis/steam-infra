@@ -12,6 +12,8 @@
 #   - the snowflake-keypair Secret in the `kafka` namespace
 #     (scripts/create-connector-secrets.sh, #43) — private key registered
 #     to snowflake.user.name below via ALTER USER ... SET RSA_PUBLIC_KEY
+#   - the snowflake-account Secret in the `kafka` namespace (account, user
+#     keys — bringup/stages/04-cluster.sh)
 #   - the debezium-postgres-source connector already producing the 16
 #     steam.public.* topics (debezium-connector.yaml, #44, #10)
 #
@@ -47,8 +49,8 @@ spec:
       steam.public.concurrent_player_snapshots:concurrent_player_snapshots,
       steam.public.marketing_campaigns:marketing_campaigns,
       steam.public.client_events:client_events
-    snowflake.url.name: https://FMBSGSW-YU41950.snowflakecomputing.com:443
-    snowflake.user.name: DULAIN
+    snowflake.url.name: https://${secrets:kafka/snowflake-account:account}.snowflakecomputing.com:443
+    snowflake.user.name: "${secrets:kafka/snowflake-account:user}"
     snowflake.private.key: "${secrets:kafka/snowflake-keypair:private_key}"
     snowflake.database.name: STEAM_PROJECT
     snowflake.schema.name: PUBLIC
