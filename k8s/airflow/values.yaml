@@ -16,7 +16,10 @@ extraEnv: |
         key: account
 
   - name: SNOWFLAKE_USER
-    value: DULAIN 
+    valueFrom:
+      secretKeyRef:
+        name: snowflake-user
+        key: user
 
   - name: SNOWFLAKE_ROLE
     value: ACCOUNTADMIN
@@ -47,3 +50,15 @@ config:
     dagbag_import_timeout: '120'
   celery:
     worker_concurrency: '2'
+
+# The chart hardcodes this job as a post-install,post-upgrade Helm hook, but
+# ArgoCD only runs PostSync hooks once every Sync-phase resource is Healthy --
+# and the scheduler/api-server/dag-processor Deployments can never go Healthy
+# because their wait-for-airflow-migrations init container blocks on this same
+# job. An explicit argocd.argoproj.io/hook annotation takes precedence over
+# the translated Helm hook (ArgoCD docs), so this moves it to PreSync and
+# breaks the deadlock. `airflow db migrate` is idempotent, so re-running it
+# every sync is harmless.
+migrateDatabaseJob:
+  jobAnnotations:
+    argocd.argoproj.io/hook: PreSync
