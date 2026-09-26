@@ -9,3 +9,6 @@ __pycache__/
 # stray root-level tofu state (real state lives in terraform/)
 /terraform.tfstate
 /terraform.tfstate.backup
+
+# per-repo-copy values (#84/#85) — see .env.example
+/.env
