@@ -6,7 +6,8 @@
 # the root Application. Verify: every Application Synced+Healthy, Kafka
 # Ready, KafkaConnect Ready, both connectors + their tasks RUNNING (this
 # replaces scripts/check-connector-health.sh as the source of truth), Airflow
-# scheduler + webserver ready.
+# scheduler + api-server ready (the airflow chart here is Airflow 3, which
+# renamed the webserver Deployment to api-server).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -161,10 +162,10 @@ until connectors_running; do
 done
 ok "connectors RUNNING: ${CONNECTORS[*]}"
 
-nsub "waiting for Airflow scheduler + webserver ready..."
+nsub "waiting for Airflow scheduler + api-server ready..."
 deadline=$((SECONDS + 600))
-until deployment_ready airflow airflow-scheduler && deployment_ready airflow airflow-webserver; do
-  (( SECONDS < deadline )) || fail "Airflow scheduler/webserver never became ready"
+until deployment_ready airflow airflow-scheduler && deployment_ready airflow airflow-api-server; do
+  (( SECONDS < deadline )) || fail "Airflow scheduler/api-server never became ready"
   sleep 15
 done
-ok "Airflow scheduler + webserver ready"
+ok "Airflow scheduler + api-server ready"
