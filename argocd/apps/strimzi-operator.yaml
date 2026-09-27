@@ -16,3 +16,13 @@ spec:
     automated:
       selfHeal: true
       prune: true
+  # The Kafka CRD's .status subresource (acceptedNames, conditions,
+  # storedVersions) is populated by the API server after creation and never
+  # appears in the git manifest -- without this, ArgoCD's diff flags it
+  # OutOfSync forever and selfHeal loops re-applying a no-op every
+  # reconciliation, never converging.
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jsonPointers:
+        - /status
