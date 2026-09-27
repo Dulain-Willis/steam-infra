@@ -60,11 +60,17 @@ config:
 # ("serviceaccount ... not found", retried forever). An explicit
 # argocd.argoproj.io/hook annotation takes precedence over the translated
 # Helm hook (ArgoCD docs) -- overriding it to Sync makes the job a plain
-# Sync-phase resource, applied in the same wave as everything else (including
-# its ServiceAccount) instead of gated on a phase transition. The Deployments'
-# init containers still crash-loop a few times until the job completes, but
-# that resolves itself on their normal backoff -- no deadlock. `airflow db
-# migrate` is idempotent, so re-running it every sync is harmless.
+# Sync-phase resource instead of gated on a phase transition. That alone
+# isn't enough, though: ArgoCD also reads the chart's helm.sh/hook-weight
+# ("1") as this resource's sync-wave, so it still lands in a later wave than
+# the Deployments (wave 0, the default) and ArgoCD won't start that wave
+# until wave 0 is Healthy -- same deadlock, one wave later. Pinning
+# sync-wave to "0" puts it in the same wave as everything else (including
+# its ServiceAccount, also wave 0) instead. The Deployments' init containers
+# still crash-loop a few times until the job completes, but that resolves
+# itself on their normal backoff -- no deadlock. `airflow db migrate` is
+# idempotent, so re-running it every sync is harmless.
 migrateDatabaseJob:
   jobAnnotations:
     argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "0"
