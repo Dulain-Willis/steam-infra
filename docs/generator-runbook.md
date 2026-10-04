@@ -94,7 +94,7 @@ aws ec2 stop-instances --instance-ids "$INSTANCE_ID"
 
 ## Also stop RDS between sessions
 
-The generator EC2 instance (t4g.micro) and RDS (db.t4g.micro) are the two
+The generator EC2 instance (t4g.micro) and RDS (db.t3.micro) are the two
 metered-by-the-hour resources; both keep costing while running even with no
 traffic. RDS supports the same stop/start cycle as EC2 (auto-restarts after
 7 days if left stopped):

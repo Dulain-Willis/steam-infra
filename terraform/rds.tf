@@ -55,7 +55,11 @@ resource "aws_db_instance" "main" {
   identifier             = "steam-infra"
   engine                 = "postgres"
   engine_version         = data.aws_rds_engine_version.postgres.version
-  instance_class         = "db.t4g.micro"
+  # t3 (Intel) instead of t4g (Graviton2) — same specs/price/free-tier
+  # eligibility, but a separate capacity pool. us-east-1 repeatedly runs out
+  # of spare db.t4g.micro hardware (InsufficientDBInstanceCapacity); t3.micro
+  # isn't fighting the same shortage.
+  instance_class         = "db.t3.micro"
   # Bumped from 20 to 22 GB after a replication slot's retained WAL (not
   # table data -- actual DB size was ~108MB) drove the instance to
   # storage-full and refused all connections. Dropping the stale slot freed

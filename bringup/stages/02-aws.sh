@@ -53,7 +53,27 @@ nbullet "rds instance (postgres)"
 nbullet "bastion EC2 instance"
 nbullet "EKS nodes (system + kafka node groups)"
 nbullet "empty ECR repo for the Kafka Connect image"
-run_step "tofu apply" tf apply -auto-approve -exclude=aws_instance.generator
+
+# RDS instance types occasionally have no spare capacity across both subnet
+# AZs — db.t4g.micro/gp3 hit this often enough in us-east-1 that we moved to
+# db.t3.micro (see rds.tf), which isn't immune either. AWS's own docs call
+# this transient with no SLA ("minutes to hours") — retry with backoff for up
+# to 10 minutes before treating it as a real failure. Any other failure
+# still fails immediately via run_step, below.
+apply_log="$LOG_DIR/tofu-apply.log"
+attempt=1
+max_attempts=10
+until tf apply -auto-approve -exclude=aws_instance.generator >"$apply_log" 2>&1; do
+  if (( attempt >= max_attempts )) || ! grep -q InsufficientDBInstanceCapacity "$apply_log"; then
+    warn "tofu apply failed — tail of $apply_log:"
+    tail -n 40 "$apply_log" >&2
+    exit 1
+  fi
+  warn "tofu apply: InsufficientDBInstanceCapacity (attempt $attempt/$max_attempts) — AWS transient capacity shortage, retrying in 60s..."
+  attempt=$((attempt + 1))
+  sleep 60
+done
+ok "tofu apply"
 
 nstep 2 "verifying EKS nodes Ready (both node groups)..."
 deadline=$((SECONDS + 1200))
