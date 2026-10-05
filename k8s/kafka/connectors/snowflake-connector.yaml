@@ -10,7 +10,7 @@
 #     in (kafka-connect.yaml, #42) and config.providers=secrets enabled
 #     there for the ${secrets:...} ref below
 #   - the snowflake-keypair Secret in the `kafka` namespace
-#     (scripts/create-connector-secrets.sh, #43) — private key registered
+#     (bringup/stages/04-cluster.sh, #43) — private key registered
 #     to snowflake.user.name below via ALTER USER ... SET RSA_PUBLIC_KEY
 #   - the snowflake-account Secret in the `kafka` namespace (account, user
 #     keys — bringup/stages/04-cluster.sh)

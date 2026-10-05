@@ -4,10 +4,11 @@
 # so ArgoCD adopts its own Helm release cleanly once root syncs that
 # Application) -> create/refresh every hand-made secret (idempotent) -> apply
 # the root Application. Verify: every Application Synced+Healthy, Kafka
-# Ready, KafkaConnect Ready, both connectors + their tasks RUNNING (this
-# replaces scripts/check-connector-health.sh as the source of truth), Airflow
-# scheduler + api-server ready (the airflow chart here is Airflow 3, which
-# renamed the webserver Deployment to api-server).
+# Ready, KafkaConnect Ready, both connectors + their tasks RUNNING (the
+# source of truth for that — #90 deleted the old
+# scripts/check-connector-health.sh this replaced), Airflow scheduler +
+# api-server ready (the airflow chart here is Airflow 3, which renamed the
+# webserver Deployment to api-server).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

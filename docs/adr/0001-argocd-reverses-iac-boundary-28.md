@@ -49,12 +49,15 @@ AWS-only resource that stays in Terraform under the new boundary.
   cluster matches the repo, for every k8s-level component at once.
 - `docs/kafka-connect-runbook.md` is retired — its bring-up steps are
   superseded by ArgoCD Application sync; its teardown step (dropping the
-  Debezium replication slot before `tofu destroy`) moved to
-  `docs/rds-bootstrap.md`, since that's independent of how the Kafka
-  resources get applied.
-- The Kafka cluster and Kafka Connect Applications require manual sync
-  approval (the stateful Kafka layer); Airflow, the connectors, and
-  ArgoCD's own Application auto-sync with `selfHeal` and `prune`.
+  Debezium replication slot before `tofu destroy`) moved to its own
+  teardown stage (`teardown/stages/03-replication-slot.sh`), since that's
+  independent of how the Kafka resources get applied.
+- The Kafka cluster and Kafka Connect Applications originally required
+  manual sync approval (the stateful Kafka layer); Airflow, the
+  connectors, and ArgoCD's own Application auto-synced with `selfHeal`
+  and `prune`. #90 reverses that split — every Application, including
+  kafka-cluster and kafka-connect, now auto-syncs, so unattended bring-up
+  (#84) never needs a manual sync approval.
 - Adopting `kafka-connect.yaml` into ArgoCD surfaced a latent bug: the
   committed manifest had a literal `<account-id>` placeholder meant for
   hand-substitution before `kubectl apply`. GitOps applies exactly what's

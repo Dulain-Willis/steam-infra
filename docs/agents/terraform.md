@@ -34,10 +34,11 @@ tofu apply -target=aws_internet_gateway.gw \
            -target=helm_release.strimzi
 ```
 
-Same trap that `scripts/bootstrap.sh` already documents for
-`-target=aws_instance.bastion -target=aws_db_instance.main` (silently drops
-`aws_iam_role_policy_attachment.bastion_ssm` and the IGW/route table) — the
-fix there was switching to `-exclude`. For an EKS-only bring-up there's no
+Same trap hit by `-target=aws_instance.bastion -target=aws_db_instance.main`
+(silently drops `aws_iam_role_policy_attachment.bastion_ssm` and the
+IGW/route table) — the fix there was switching to `-exclude`, which is why
+`bringup/stages/02-aws.sh` applies with `-exclude=aws_instance.generator`
+rather than `-target`ing everything else. For an EKS-only bring-up there's no
 equivalent single `-exclude` (excluding RDS/bastion/generator still leaves
 the same missing-attribute-reference gap for the EKS subnets), so list the
 network resources out explicitly instead.

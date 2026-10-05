@@ -5,9 +5,9 @@
 #     built in (kafka-connect.yaml, #42) and config.providers=secrets
 #     enabled there for the ${secrets:...} refs below
 #   - the rds-credentials Secret in the `kafka` namespace
-#     (scripts/create-connector-secrets.sh, #43)
+#     (bringup/stages/04-cluster.sh, #43)
 #   - RDS logical replication + the connecting user's grants already in
-#     place (scripts/check-rds-prereqs.sh, #31) — a plugin.name: pgoutput
+#     place (bringup/stages/03-database.sh, #31) — a plugin.name: pgoutput
 #     failure at connector startup almost always means this step was skipped
 #
 # database.hostname is a placeholder — replace with:
