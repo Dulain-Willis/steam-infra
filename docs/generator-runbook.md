@@ -1,9 +1,9 @@
 # Generator runbook
 
 First-time / from-scratch bring-up (RDS + schema + seed + generator, in the
-order that avoids the crash-loop below) is `./scripts/bootstrap.sh` — see
-`docs/rds-bootstrap.md`. Everything past this point assumes that's already
-been run at least once.
+order that avoids the crash-loop below) is `bringup/bringup.sh` — see the
+README. Everything past this point assumes that's already been run at
+least once.
 
 The generator EC2 instance runs a Docker container that ticks against
 Postgres over the private VPC on a jittered interval, picking an event
@@ -48,8 +48,9 @@ instantaneous.
 
 Re-measure after changing `tick_min_seconds`/`tick_max_seconds` in
 `terraform/generator.tf` or `EVENT_WEIGHTS` in `generator/generator.py`:
-open the tunnel (`docs/rds-bootstrap.md`), sum row counts across the event
-tables above, wait N seconds, sum again, and divide the delta by N.
+open the tunnel (`lib/tunnel.sh`, same as `bringup/stages/03-database.sh`
+uses), sum row counts across the event tables above, wait N seconds, sum
+again, and divide the delta by N.
 
 ```sql
 select
@@ -64,9 +65,9 @@ select
 ## Seed before first run
 
 The generator writes purchases against existing users/games — it does not
-create them. Run `generator/seed.py` once against a fresh database (after
-the schema is applied, see `docs/rds-bootstrap.md`) before starting the
-generator, or purchase ticks will find empty `users`/`games` tables.
+create them. `bringup/stages/03-database.sh` runs `generator/seed.py` once
+the schema is applied, before the generator starts, or purchase ticks
+would find empty `users`/`games` tables.
 
 ## Start
 
@@ -110,9 +111,8 @@ aws rds start-db-instance --db-instance-identifier "$DB_ID"
 Stopped, the only ongoing charge is storage (RDS gp3 + EC2 root volumes,
 well under $1/month combined) — comfortably inside the $0-3/month band.
 Running 24/7, EC2 + RDS on-demand hourly rates alone land past $15/month, so
-stop-when-idle (or `tofu destroy` for a full reset, see
-`docs/rds-bootstrap.md`) is the cost control, not a scheduler — no cron is
-introduced.
+stop-when-idle (or `teardown/teardown.sh` for a full reset) is the cost
+control, not a scheduler — no cron is introduced.
 
 ## First boot after `tofu apply`
 
@@ -121,9 +121,10 @@ minute or two for `dnf install docker` + `docker build` before logs appear.
 
 If the generator instance is created in the same `tofu apply` as a fresh
 RDS instance (rather than after schema/seed already exist, as
-`scripts/bootstrap.sh` orders it), it starts ticking against empty
-`users`/`games` tables — `purchase`/`playtime_session`/etc ticks throw on
-the empty `select ... order by random() limit 1` and the container
-crash-loops (`--restart unless-stopped` keeps retrying) until seed data
-lands. Self-healing, but noisy. Use the script, or apply RDS+seed before
-the generator exists, to avoid it.
+`bringup/bringup.sh` orders it — the generator is its own stage 5, held
+back until after stage 3 seeds the database), it starts ticking against
+empty `users`/`games` tables — `purchase`/`playtime_session`/etc ticks
+throw on the empty `select ... order by random() limit 1` and the
+container crash-loops (`--restart unless-stopped` keeps retrying) until
+seed data lands. Self-healing, but noisy. Use `bringup/bringup.sh`, or
+apply RDS+seed before the generator exists, to avoid it.

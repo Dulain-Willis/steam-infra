@@ -4,10 +4,8 @@
 # so re-applying it against an existing schema fails outright — the guard
 # lives in lib/schema_guard.py) → seed only if empty → verify the Debezium
 # prerequisites (logical replication, rds_replication grant, SELECT on every
-# captured table). This replaces scripts/check-rds-prereqs.sh as the source
-# of truth for those checks; that script stays for now since the old
-# bootstrap.sh still calls it, and both are deleted together in the final
-# cleanup slice (#84).
+# captured table) — the source of truth for those checks (#90 deleted the
+# old scripts/check-rds-prereqs.sh this replaced).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
