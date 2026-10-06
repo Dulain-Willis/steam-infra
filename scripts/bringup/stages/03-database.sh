@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Stage 3/3: database. One SSM tunnel to RDS (shared lib/tunnel.sh) →
+# Stage 3/3: database. One SSM tunnel to RDS (shared scripts/lib/tunnel.sh) →
 # apply db/schema.sql only if absent (schema.sql uses bare `create table`,
 # so re-applying it against an existing schema fails outright — the guard
-# lives in lib/schema_guard.py) → seed only if empty → verify the Debezium
+# lives in scripts/lib/schema_guard.py) → seed only if empty → verify the Debezium
 # prerequisites (logical replication, rds_replication grant, SELECT on every
 # captured table) — the source of truth for those checks (#90 deleted the
 # old scripts/check-rds-prereqs.sh this replaced).
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
-# shellcheck source=lib/env.sh
-source "$REPO_ROOT/lib/env.sh"
-# shellcheck source=lib/tunnel.sh
-source "$REPO_ROOT/lib/tunnel.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
+# shellcheck source=scripts/lib/env.sh
+source "$REPO_ROOT/scripts/lib/env.sh"
+# shellcheck source=scripts/lib/tunnel.sh
+source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
 stage 3 3 "Database"
@@ -40,10 +40,10 @@ export PGPASSWORD="$DB_PASSWORD"
 PSQL=(psql -h 127.0.0.1 -p 15432 -U "$DB_USER" -d "$DB_NAME" -tA)
 
 nstep 2 "applying schema..."
-if uv run "$REPO_ROOT/lib/schema_guard.py" schema-applied >/dev/null 2>&1; then
+if uv run "$REPO_ROOT/scripts/lib/schema_guard.py" schema-applied >/dev/null 2>&1; then
   ok "schema already applied"
 else
-  run_step "apply schema" uv run "$REPO_ROOT/lib/schema_guard.py" apply-schema
+  run_step "apply schema" uv run "$REPO_ROOT/scripts/lib/schema_guard.py" apply-schema
 fi
 
 nstep 3 "seeding..."
