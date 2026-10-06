@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Stage 2/6: delete the ArgoCD Applications so Kubernetes-created AWS
-# resources (PVC-backed EBS volumes, any load balancers) are gone before
-# Stage 5's `tofu destroy` — otherwise they're orphaned (nothing in
-# Terraform state references them) and can block VPC deletion.
+# resources (PVC-backed EBS volumes, any load balancers) are actually gone
+# on the AWS side before Stage 5's `tofu destroy` — otherwise they're
+# orphaned (nothing in Terraform state references them, and the cluster
+# that would delete them is gone) and can block VPC deletion.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -63,6 +64,12 @@ for entry in "${leftover_pvcs[@]+"${leftover_pvcs[@]}"}"; do
 done
 
 nstep 6 "waiting for Applications, PVCs, and load balancers to be gone..."
+# The PVC object disappearing from the Kubernetes API only means deletion was
+# requested — the ebs-csi driver's actual DeleteVolume call against AWS is
+# async and can still be in flight. If Stage 5's tofu destroy kills the
+# cluster (and the csi-controller pod with it) before that call lands, the
+# EBS volume is orphaned forever with nothing left to delete it. So wait on
+# the AWS side too, not just the PVC object being gone.
 deadline=$((SECONDS + 600))
 while (( SECONDS < deadline )); do
   apps_left=0
@@ -71,8 +78,11 @@ while (( SECONDS < deadline )); do
   done
   pvcs_left=$(kubectl get pvc -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
   lbs_left=$(kubectl get svc -A -o json 2>/dev/null | jq '[.items[] | select(.spec.type=="LoadBalancer")] | length')
-  if (( apps_left == 0 && pvcs_left == 0 && lbs_left == 0 )); then
-    ok "Applications, PVCs, and load balancers all gone"
+  ebs_vols_left=$(aws ec2 describe-volumes --region "$AWS_REGION" \
+    --filters "Name=tag:KubernetesCluster,Values=$EKS_CLUSTER_NAME" "Name=status,Values=available,creating,in-use,deleting" \
+    --query 'length(Volumes)' --output text 2>/dev/null || echo 1)
+  if (( apps_left == 0 && pvcs_left == 0 && lbs_left == 0 && ebs_vols_left == 0 )); then
+    ok "Applications, PVCs, load balancers, and EBS volumes all gone"
     exit 0
   fi
   sleep 10
@@ -82,4 +92,7 @@ warn "timed out after 10m waiting for cleanup. Remaining state:"
 kubectl get applications -n argocd 2>&1 >&2 || true
 kubectl get pvc -A 2>&1 >&2 || true
 kubectl get svc -A 2>&1 >&2 || true
+aws ec2 describe-volumes --region "$AWS_REGION" \
+  --filters "Name=tag:KubernetesCluster,Values=$EKS_CLUSTER_NAME" "Name=status,Values=available,creating,in-use,deleting" \
+  2>&1 >&2 || true
 fail "ArgoCD cascade delete did not finish in time"
