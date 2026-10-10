@@ -17,11 +17,11 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 4 5 "Cluster"
+stage 4 6 "Cluster"
 
 # Every Application the root app-of-apps (argocd/apps) is expected to bring
 # up. Kept as one list so "all healthy" and "count matches" can't drift.
-EXPECTED_APPS=(root argocd airflow airflow-storageclass connectors kafka-cluster kafka-connect strimzi-operator)
+EXPECTED_APPS=(root argocd alb-controller airflow airflow-storageclass connectors kafka-cluster kafka-connect strimzi-operator)
 
 CONNECT_POD="steam-infra-connect-0"
 CONNECTORS=(debezium-postgres-source snowflake-sink)

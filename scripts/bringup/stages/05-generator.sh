@@ -15,7 +15,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 5 5 "Generator"
+stage 5 6 "Generator"
 
 # Event tables the generator writes to on a tick (docs/generator-runbook.md's
 # throughput query) - summed as one row-count proxy for "is it ticking".

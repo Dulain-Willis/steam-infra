@@ -19,7 +19,7 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 2 3 "AWS"
+stage 2 6 "AWS"
 
 bastion_online() {
   local bastion_id

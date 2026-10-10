@@ -17,7 +17,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 3 3 "Database"
+stage 3 6 "Database"
 
 CAPTURED_TABLES=(
   users games game_prices marketing_campaigns purchases ownership_grants
