@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 3/3: database. One SSM tunnel to RDS (shared scripts/lib/tunnel.sh) →
+# Stage 3/6: database. One SSM tunnel to RDS (shared scripts/lib/tunnel.sh) →
 # apply db/schema.sql only if absent (schema.sql uses bare `create table`,
 # so re-applying it against an existing schema fails outright — the guard
 # lives in scripts/lib/schema_guard.py) → seed only if empty → verify the Debezium
@@ -17,7 +17,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 3 3 "Database"
+stage 3 6 "Database"
 
 CAPTURED_TABLES=(
   users games game_prices marketing_campaigns purchases ownership_grants

@@ -82,3 +82,25 @@ module "ebs_csi_irsa" {
     }
   }
 }
+
+# Same IRSA pattern as ebs_csi_irsa above, for the AWS Load Balancer
+# Controller (#107). Unlike aws-ebs-csi-driver, AWS doesn't offer this as an
+# EKS-managed cluster_addon (#106's "same addon pattern" decision doesn't
+# hold up against the real API) — so only the IRSA role lives here; the
+# controller workload itself is an ArgoCD Application
+# (argocd/apps/alb-controller.yaml), matching ADR 0001's boundary
+# (Terraform = AWS/EKS only, ArgoCD = everything k8s-application-layer).
+module "alb_controller_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name                              = "alb-controller"
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}

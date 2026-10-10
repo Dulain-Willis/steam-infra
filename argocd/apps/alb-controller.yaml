@@ -1,0 +1,39 @@
+# AWS Load Balancer Controller (#107): provisions the internal ALB in
+# front of Airflow/Argo CD from the Ingress objects in airflow.yaml and
+# this same file's argocd.yaml sibling (grouped via IngressGroup, see
+# those Ingress annotations). Not a Terraform cluster_addon — AWS doesn't
+# offer this controller as an EKS-managed addon (unlike aws-ebs-csi-driver),
+# so only its IRSA role lives in Terraform (terraform/eks.tf,
+# module.alb_controller_irsa); the controller workload itself follows ADR
+# 0001's boundary like every other k8s-application-layer piece here.
+#
+# Role ARN is hardcoded to this project's one dedicated AWS account, same
+# precedent as kafka-connect.yaml's ECR repository URL (ADR 0001's
+# Consequences) — a static GitOps manifest can't read a Terraform output.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: alb-controller
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://aws.github.io/eks-charts
+    chart: aws-load-balancer-controller
+    targetRevision: 1.8.3
+    helm:
+      values: |
+        clusterName: steam-infra
+        region: us-east-1
+        serviceAccount:
+          create: true
+          name: aws-load-balancer-controller
+          annotations:
+            eks.amazonaws.com/role-arn: arn:aws:iam::497675597225:role/alb-controller
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true

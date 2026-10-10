@@ -54,6 +54,11 @@ resource "aws_subnet" "eks_a" {
   tags = {
     Name                     = "steam-infra-eks-a"
     "kubernetes.io/role/elb" = "1"
+    # Internal admin ALB (#107) auto-discovers subnets by this tag — there's
+    # no separate private subnet with egress (no NAT gateway, per #33's
+    # cost/complexity tradeoff), so it shares these node subnets with the
+    # public-ELB tag above rather than needing new ones.
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 
@@ -64,8 +69,9 @@ resource "aws_subnet" "eks_b" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                     = "steam-infra-eks-b"
-    "kubernetes.io/role/elb" = "1"
+    Name                              = "steam-infra-eks-b"
+    "kubernetes.io/role/elb"          = "1"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 

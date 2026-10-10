@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 1/2: preflight. Fails fast on a missing tool, broken AWS
+# Stage 1/6: preflight. Fails fast on a missing tool, broken AWS
 # credentials, or an incomplete .env — before any bring-up work starts.
 # Then detects leftovers from a previous session (tofu state holds
 # resources beyond the tfstate bucket, or the Snowflake database exists)
@@ -13,7 +13,7 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 1 3 "Preflight"
+stage 1 6 "Preflight"
 
 missing=()
 for bin in tofu aws kubectl helm uv jq psql session-manager-plugin; do
