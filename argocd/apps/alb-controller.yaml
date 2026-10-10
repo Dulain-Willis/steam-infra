@@ -25,6 +25,19 @@ spec:
       values: |
         clusterName: steam-infra
         region: us-east-1
+        # Found on a real cold bring-up: this webhook's self-signed cert
+        # briefly races its own caBundle on first boot (two replicas, no
+        # cert-manager) -- "failed to verify certificate: x509: signed by
+        # unknown authority". With the chart's default failurePolicy: Fail,
+        # that window is enough to permanently SyncFailed every other app's
+        # Service objects cluster-wide (no syncPolicy.retry is configured
+        # anywhere in this repo, so a failed sync just sits there). Nothing
+        # here uses type=LoadBalancer Services -- only Ingress -- so this
+        # webhook's mutation (finalizer injection for LB-type Services) is
+        # never actually needed; Ignore removes the blast radius instead of
+        # racing to fix the timing.
+        serviceMutatorWebhookConfig:
+          failurePolicy: Ignore
         serviceAccount:
           create: true
           name: aws-load-balancer-controller
