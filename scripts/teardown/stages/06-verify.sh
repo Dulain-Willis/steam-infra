@@ -6,11 +6,11 @@
 # (dynamically-provisioned EBS volumes, in particular).
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
-# shellcheck source=lib/env.sh
-source "$REPO_ROOT/lib/env.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
+# shellcheck source=scripts/lib/env.sh
+source "$REPO_ROOT/scripts/lib/env.sh"
 
 stage 6 6 "Verify \$0"
 
@@ -62,7 +62,7 @@ fi
 
 nstep 6 "Snowflake database $SNOWFLAKE_DATABASE..."
 env_complete || fail ".env incomplete"
-if uv run "$REPO_ROOT/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
+if uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
   warn "$SNOWFLAKE_DATABASE still exists"
   problems+=("Snowflake database: $SNOWFLAKE_DATABASE")
 else

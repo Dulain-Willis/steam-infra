@@ -6,13 +6,13 @@
 # trigger (#84 Out of Scope).
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
-# shellcheck source=lib/env.sh
-source "$REPO_ROOT/lib/env.sh"
-# shellcheck source=lib/tunnel.sh
-source "$REPO_ROOT/lib/tunnel.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
+# shellcheck source=scripts/lib/env.sh
+source "$REPO_ROOT/scripts/lib/env.sh"
+# shellcheck source=scripts/lib/tunnel.sh
+source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
 stage 5 5 "Generator"

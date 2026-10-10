@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # .env loading + fixed values + the tofu wrapper, shared by bring-up and
 # teardown. Sourced by stage scripts — never run directly. Depends on
-# lib/output.sh already being sourced (uses warn/note).
+# scripts/lib/output.sh already being sourced (uses warn/note).
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TF_DIR="$REPO_ROOT/terraform"
 ENV_FILE="$REPO_ROOT/.env"
 

@@ -5,11 +5,11 @@
 # are excluded instead.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
-# shellcheck source=lib/env.sh
-source "$REPO_ROOT/lib/env.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
+# shellcheck source=scripts/lib/env.sh
+source "$REPO_ROOT/scripts/lib/env.sh"
 
 stage 5 6 "tofu destroy"
 

@@ -7,11 +7,11 @@
 # clean slate. Finally creates the Snowflake database.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
-# shellcheck source=lib/env.sh
-source "$REPO_ROOT/lib/env.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
+# shellcheck source=scripts/lib/env.sh
+source "$REPO_ROOT/scripts/lib/env.sh"
 
 stage 1 3 "Preflight"
 
@@ -36,7 +36,7 @@ nstep 1 "checking for leftovers from a previous session..."
 run_step "tofu init" tf init -input=false
 tf_leftover_resources=$(tf_leftovers)
 snowflake_db_exists=false
-if uv run "$REPO_ROOT/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
+if uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
   snowflake_db_exists=true
 fi
 
@@ -46,19 +46,19 @@ else
   [[ -n "$tf_leftover_resources" ]] && warn "tofu state holds resources beyond the tfstate bucket"
   [[ "$snowflake_db_exists" == true ]] && warn "$SNOWFLAKE_DATABASE already exists in Snowflake"
   nsub "running teardown first..."
-  bash "$REPO_ROOT/teardown/teardown.sh"
+  bash "$REPO_ROOT/scripts/teardown/teardown.sh"
   ok "leftovers cleared"
 fi
 
 nstep 2 "creating Snowflake database $SNOWFLAKE_DATABASE..."
-if uv run "$REPO_ROOT/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
+if uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
   skip_note="$SNOWFLAKE_DATABASE already exists"
   ok "$skip_note"
 else
-  run_step "create database" uv run "$REPO_ROOT/lib/snowflake_db.py" create-database
+  run_step "create database" uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" create-database
 fi
 
-if ! uv run "$REPO_ROOT/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
+if ! uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
   fail "$SNOWFLAKE_DATABASE still missing after create-database"
 fi
 ok "$SNOWFLAKE_DATABASE present"

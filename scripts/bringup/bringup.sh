@@ -13,9 +13,9 @@
 #   --stop-after N   stop after stage N (for testing a partial bring-up)
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=lib/output.sh
-source "$REPO_ROOT/lib/output.sh"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/lib/output.sh
+source "$REPO_ROOT/scripts/lib/output.sh"
 
 START_FROM=1
 STOP_AFTER=999
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/bringup/stages" -maxdepth 1 -name '*.sh' | sort)
+mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/scripts/bringup/stages" -maxdepth 1 -name '*.sh' | sort)
 
 banner "steam-infra bring-up"
 

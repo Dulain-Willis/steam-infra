@@ -9,7 +9,7 @@
 
 db/schema.sql uses bare `create table` (no `if not exists`), so re-running it
 against an already-applied schema fails outright. Run via
-`uv run lib/schema_guard.py <schema-applied|apply-schema>` through the RDS
+`uv run scripts/lib/schema_guard.py <schema-applied|apply-schema>` through the RDS
 SSM tunnel — connection comes from DB_HOST/DB_PORT/DB_NAME/DB_USER/
 DB_PASSWORD env vars, the same convention generator/seed.py uses so both
 scripts share one tunnel/env setup.
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import psycopg2
 
-SCHEMA_FILE = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+SCHEMA_FILE = Path(__file__).resolve().parent.parent.parent / "db" / "schema.sql"
 
 
 def _connect():
