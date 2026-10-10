@@ -42,6 +42,12 @@ extraEnv: |
         name: snowflake-keypair
         key: private_key
 
+  # Served under /airflow on the shared internal ALB (#107) — tells the
+  # API server (Airflow 3's renamed webserver) to generate links/redirects
+  # with that prefix instead of assuming it's mounted at /.
+  - name: AIRFLOW__API__BASE_URL
+    value: "/airflow"
+
 # dbt ls against Snowflake (cold TLS+auth+full manifest parse) exceeds the
 # chart's default 30s dagbag_import_timeout -- DAG never renders, no error
 # in dbt itself. Bumped, not a secret/auth problem.
@@ -74,3 +80,18 @@ migrateDatabaseJob:
   jobAnnotations:
     argocd.argoproj.io/hook: Sync
     argocd.argoproj.io/sync-wave: "0"
+
+# Internal ALB ingress (#107) -- grouped with argocd.yaml's Ingress onto one
+# shared ALB via group.name. internal/ip/HTTP-only annotations mirror #106's
+# locked-in decisions (no public exposure, no TLS/domain).
+ingress:
+  apiServer:
+    enabled: true
+    ingressClassName: alb
+    path: /airflow
+    pathType: Prefix
+    annotations:
+      alb.ingress.kubernetes.io/group.name: steam-infra-admin
+      alb.ingress.kubernetes.io/scheme: internal
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'

@@ -9,6 +9,39 @@ spec:
     repoURL: https://argoproj.github.io/argo-helm
     chart: argo-cd
     targetRevision: 10.9.2
+    helm:
+      values: |
+        # Served under /argocd on the shared internal ALB (#107), grouped
+        # with airflow.yaml's Ingress via group.name. server.insecure is
+        # needed because the ALB listener is plain HTTP (#106: no
+        # TLS/domain) and argocd-server otherwise only serves gRPC/HTTPS.
+        # The chart always sets the Ingress rule's host (falling back to
+        # global.domain, default "argocd.example.com", when
+        # server.ingress.hostname is empty) -- blanking global.domain too
+        # makes that `host:` empty, which k8s treats as "match any Host"
+        # instead of a fixed hostname nothing here will ever send.
+        global:
+          domain: ""
+        configs:
+          params:
+            server.insecure: "true"
+            server.rootpath: /argocd
+            # rootpath alone only affects route registration; basehref is
+            # what actually gets templated into index.html's <base href>,
+            # so the SPA's JS bundle request resolves under /argocd instead
+            # of /, which the ALB has no rule for (-> 404 on first asset).
+            server.basehref: /argocd
+        server:
+          ingress:
+            enabled: true
+            ingressClassName: alb
+            path: /argocd
+            pathType: Prefix
+            annotations:
+              alb.ingress.kubernetes.io/group.name: steam-infra-admin
+              alb.ingress.kubernetes.io/scheme: internal
+              alb.ingress.kubernetes.io/target-type: ip
+              alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
