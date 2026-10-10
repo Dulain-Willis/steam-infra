@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 5/5: generator + end-to-end smoke test. `tofu apply` including the
+# Stage 5/6: generator + end-to-end smoke test. `tofu apply` including the
 # generator (held back from Stage 2 until the database is seeded) -> verify
 # the instance is running and RDS row counts actually grow -> run the
 # RDS -> Debezium -> Kafka -> Snowflake smoke test. No dbt/Airflow DAG

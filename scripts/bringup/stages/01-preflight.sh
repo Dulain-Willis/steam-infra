@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 1/2: preflight. Fails fast on a missing tool, broken AWS
+# Stage 1/6: preflight. Fails fast on a missing tool, broken AWS
 # credentials, or an incomplete .env — before any bring-up work starts.
 # Then detects leftovers from a previous session (tofu state holds
 # resources beyond the tfstate bucket, or the Snowflake database exists)

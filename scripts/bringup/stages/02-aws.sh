@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 2/2: AWS infrastructure. One `tofu apply` of everything except the
+# Stage 2/6: AWS infrastructure. One `tofu apply` of everything except the
 # generator (held back until the database is seeded — a later stage), then
 # verifies EKS nodes Ready (both node groups), RDS available, and the
 # bastion's SSM agent Online, so a stage 3 failure doesn't waste a 20-minute
