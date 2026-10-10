@@ -32,8 +32,9 @@ ok "stopped (or wasn't running)"
 # connectors). "argocd" is deliberately excluded — it manages ArgoCD's own
 # Helm release (the controller doing this deleting), so giving it the
 # finalizer too risks the controller killing itself mid-cascade before it
-# finishes the others. Left unmanaged, its resources have no PVC/LB and die
-# with the EKS cluster in Stage 5 regardless.
+# finishes the others. Its PVC-free resources still die with the EKS
+# cluster in Stage 5 regardless -- except its own Ingress (#107), which
+# needs its ALB deleted explicitly; see below.
 CASCADE_APPS=(root airflow connectors kafka-cluster kafka-connect strimzi-operator)
 
 nstep 2 "checking whether the cluster still exists..."
@@ -61,6 +62,15 @@ else
   kubectl patch application argocd -n argocd --type merge \
     -p '{"metadata":{"finalizers":["resources-finalizer.argocd.argoproj.io"]}}' >/dev/null 2>&1 || true
   kubectl delete application argocd -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
+
+  # "argocd"'s own Ingress (#107) is the one resource of its that the
+  # CASCADE_APPS comment above no longer covers: that reasoning predates
+  # #107 and only holds for PVC/LB-free resources. Its ALB otherwise has
+  # nothing left to delete it once alb-controller dies with the cluster in
+  # Stage 5 -- found by actually hitting this on a live teardown, not
+  # from reading the chart. Delete it directly, bypassing ArgoCD (which
+  # won't touch "argocd"'s own resources without the finalizer above).
+  kubectl delete ingress argocd-server -n argocd --ignore-not-found >/dev/null 2>&1 || true
 fi
 
 # StatefulSet-managed PVCs (airflow's postgresql/redis charts use
