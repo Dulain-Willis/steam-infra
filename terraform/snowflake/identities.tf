@@ -3,11 +3,16 @@
 # rotate on every bring-up and never exist outside tofu state and the
 # Kubernetes Secrets bring-up copies them into (#112 story 39).
 #
-# | Role             | Reads     | Writes     |
-# |------------------|-----------|------------|
-# | LOADER           | —         | STEAM_RAW  |
-# | TRANSFORMER_PROD | STEAM_RAW | STEAM_PROD |
-# | DEVELOPER        | STEAM_RAW | STEAM_DEV  |
+# | Role                | Reads     | Writes        |
+# |---------------------|-----------|---------------|
+# | LOADER              | —         | STEAM_RAW     |
+# | TRANSFORMER_STAGING | STEAM_RAW | STEAM_STAGING |
+# | TRANSFORMER_PROD    | STEAM_RAW | STEAM_PROD    |
+# | DEVELOPER           | STEAM_RAW | STEAM_DEV     |
+#
+# Each transformer writes exactly one build database and has no grant at all
+# on the other's, which is what makes "a bad staging run cannot damage prod"
+# (#112 story 24) provable by bring-up's grant check rather than asserted.
 #
 # DEVELOPER has no grant whatsoever on STEAM_PROD, not even read: only the CI
 # identity (#116) needs prod read, for slim-CI deferral, and a developer
@@ -39,9 +44,10 @@ locals {
   warehouse = "COMPUTE_WH"
 
   # Every role that runs SQL needs USAGE on it. Add roles here as later
-  # tickets add them (#116 CI, #119 TRANSFORMER_STAGING).
+  # tickets add them (#116 CI).
   compute_roles = [
     snowflake_account_role.loader.name,
+    snowflake_account_role.transformer_staging.name,
     snowflake_account_role.transformer_prod.name,
     snowflake_account_role.developer.name,
   ]
@@ -51,18 +57,19 @@ locals {
 
   # Roles that read the landing tables in STEAM_RAW. Every environment's dbt
   # build does, with the same grants, so this is a list rather than a block
-  # per role — #116 adds CI, #119 TRANSFORMER_STAGING.
+  # per role — #116 adds CI and needs no new resource.
   raw_readers = [
+    snowflake_account_role.transformer_staging.name,
     snowflake_account_role.transformer_prod.name,
     snowflake_account_role.developer.name,
   ]
 
   # Which database each role builds into, same idea. #116 adds CI =>
-  # STEAM_DEV (two roles writing one database is fine), #119
-  # TRANSFORMER_STAGING => STEAM_STAGING.
+  # STEAM_DEV (two roles writing one database is fine).
   build_databases = {
-    (snowflake_account_role.transformer_prod.name) = snowflake_database.prod.name
-    (snowflake_account_role.developer.name)        = snowflake_database.dev.name
+    (snowflake_account_role.transformer_staging.name) = snowflake_database.staging.name
+    (snowflake_account_role.transformer_prod.name)    = snowflake_database.prod.name
+    (snowflake_account_role.developer.name)           = snowflake_database.dev.name
   }
 
   # One service user per non-human identity. Each gets exactly one role, a
@@ -73,6 +80,11 @@ locals {
       name    = "STEAM_LOADER_SVC"
       role    = snowflake_account_role.loader.name
       comment = "Kafka Snowflake sink — lands CDC tables in STEAM_RAW"
+    }
+    staging_airflow = {
+      name    = "STEAM_STAGING_SVC"
+      role    = snowflake_account_role.transformer_staging.name
+      comment = "staging Airflow — runs dbt into STEAM_STAGING"
     }
     prod_airflow = {
       name    = "STEAM_PROD_SVC"
@@ -85,6 +97,11 @@ locals {
 resource "snowflake_account_role" "loader" {
   name    = "LOADER"
   comment = "writes CDC landing tables into STEAM_RAW; reads nothing"
+}
+
+resource "snowflake_account_role" "transformer_staging" {
+  name    = "TRANSFORMER_STAGING"
+  comment = "reads STEAM_RAW, writes only STEAM_STAGING"
 }
 
 resource "snowflake_account_role" "transformer_prod" {
@@ -153,11 +170,11 @@ resource "snowflake_grant_privileges_to_account_role" "loader_raw_future_schemas
   }
 }
 
-# --- Reading STEAM_RAW: TRANSFORMER_PROD and DEVELOPER ----------------------
+# --- Reading STEAM_RAW: the transformers and DEVELOPER ----------------------
 #
 # Every environment's dbt build reads the same landing tables, and the grant
-# set is identical for each, so the readers are a list — #116 adds CI, #119
-# TRANSFORMER_STAGING, and neither needs a new resource.
+# set is identical for each, so the readers are a list — #116 adds CI and
+# needs no new resource.
 #
 # Only TABLES, no VIEWS: STEAM_RAW holds nothing but sink-created tables.
 
@@ -219,10 +236,11 @@ resource "snowflake_grant_privileges_to_account_role" "raw_reader_future_tables"
   }
 }
 
-# --- Writing a build database: TRANSFORMER_PROD and DEVELOPER ---------------
+# --- Writing a build database: the transformers and DEVELOPER ---------------
 #
-# dbt creates its own schemas — the layer schemas in STEAM_PROD, a developer's
-# dbt_<name>_* ones in STEAM_DEV — so CREATE SCHEMA on the database is the
+# dbt creates its own schemas — the layer schemas in STEAM_STAGING and
+# STEAM_PROD, a developer's dbt_<name>_* ones in STEAM_DEV — so CREATE SCHEMA
+# on the database is the
 # load-bearing grant; it owns what it creates. The schema-level grants cover
 # schemas it did not create: PUBLIC, and in STEAM_DEV a teammate's.
 #

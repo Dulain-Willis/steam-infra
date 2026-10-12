@@ -41,6 +41,11 @@ DB_NAME="steam"
 DB_USER="steam_proj_admin"
 REPLICATION_SLOT_NAME="debezium_steam"
 SNOWFLAKE_RAW_DATABASE="STEAM_RAW"
+# One build database per deployed environment, bare layer schema names in
+# both (steam-analytics' generate_schema_name); the staging Airflow writes
+# the first, the prod one the second, and neither role has any grant on the
+# other's database.
+SNOWFLAKE_STAGING_DATABASE="STEAM_STAGING"
 SNOWFLAKE_PROD_DATABASE="STEAM_PROD"
 # Developer and CI dbt builds, separated by schema prefix: dbt_<name>_<layer>
 # and ci_pr_<N>_<layer> (steam-analytics' generate_schema_name).
@@ -51,15 +56,15 @@ SNOWFLAKE_DEV_DATABASE="STEAM_DEV"
 SNOWFLAKE_SOURCE_SCHEMA="STEAM_RDS"
 SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
 export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
-  REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_PROD_DATABASE \
-  SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA SNOWFLAKE_WAREHOUSE
+  REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_STAGING_DATABASE \
+  SNOWFLAKE_PROD_DATABASE SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA \
+  SNOWFLAKE_WAREHOUSE
 
 # Every Snowflake object terraform/snowflake owns, by name. Bring-up's
 # leftover detection, its verify step and teardown's $0 inventory all walk
 # these, so "did we leave anything behind" can't drift from "what do we
-# create". Add to them when a ticket adds an object: #116 CI, #119
-# STEAM_STAGING + TRANSFORMER_STAGING.
-SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE" "$SNOWFLAKE_DEV_DATABASE")
+# create". Add to them when a ticket adds an object: #116 CI.
+SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_STAGING_DATABASE" "$SNOWFLAKE_PROD_DATABASE" "$SNOWFLAKE_DEV_DATABASE")
 # Roles have no shared prefix, so they are listed by exact name. Users — the
 # service users and the developers' STEAM_DEV_<NAME> users alike — all match
 # STEAM\_%, so they are matched by pattern instead (`_` is a single-character
@@ -67,7 +72,7 @@ SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE
 # deliberately does not match: it is not ours to remove, which is also why
 # their developer user is a separate STEAM_DEV_<NAME> one.
 # shellcheck disable=SC2034  # read by stage scripts that source this file
-SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_PROD DEVELOPER)
+SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_STAGING TRANSFORMER_PROD DEVELOPER)
 # shellcheck disable=SC2034  # read by stage scripts that source this file
 SNOWFLAKE_PROJECT_USER_PATTERN='STEAM\_%'
 

@@ -23,20 +23,42 @@ TUNNEL_PID_FILE="$LOG_DIR/admin-alb-tunnel.pid"
 BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 [[ -n "$BASTION_ID" ]] || fail "missing bastion_instance_id output — did Stage 3 (AWS) run?"
 
-# The Airflow chart names its api-server Ingress <release>-ingress. Looked up
-# by name rather than `{.items[0]}`: #119 adds a second Airflow, and an
-# order-dependent pick over every Ingress in the namespace would start
-# reporting an arbitrary one of them without failing.
-AIRFLOW_INGRESS="airflow-ingress"
+# Every Airflow environment's api-server Ingress, as "NAMESPACE PATH". The
+# chart names the Ingress <release>-ingress and argocd/apps uses the release
+# name as the namespace, so both are the environment's name.
+#
+# Looked up by name rather than `{.items[0]}`: there is more than one Airflow
+# now, and an order-dependent pick over every Ingress in a namespace would
+# start reporting an arbitrary one of them without failing.
+#
+# All of them are members of one IngressGroup and so share one ALB, but each
+# is waited on separately: a member whose rule never made it onto the ALB —
+# the failure mode of a wrong exclusive annotation or a bad path — leaves that
+# environment with no hostname while the others look fine.
+AIRFLOW_INGRESSES=(
+  "airflow /airflow"
+  "airflow-staging /airflow-staging"
+)
 
-nstep 1 "waiting for the ALB hostname to be assigned..."
+nstep 1 "waiting for the ALB hostname on every Airflow Ingress..."
 ALB_HOST=""
-deadline=$((SECONDS + 300))
-until [[ -n "$ALB_HOST" ]]; do
-  ALB_HOST=$(kubectl get ingress "$AIRFLOW_INGRESS" -n airflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
-  [[ -n "$ALB_HOST" ]] && break
-  (( SECONDS < deadline )) || fail "ALB hostname never appeared on Ingress $AIRFLOW_INGRESS in namespace airflow"
-  sleep 10
+for entry in "${AIRFLOW_INGRESSES[@]}"; do
+  read -r ns _path <<<"$entry"
+  host=""
+  deadline=$((SECONDS + 300))
+  until [[ -n "$host" ]]; do
+    host=$(kubectl get ingress "$ns-ingress" -n "$ns" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+    [[ -n "$host" ]] && break
+    (( SECONDS < deadline )) || fail "ALB hostname never appeared on Ingress $ns-ingress in namespace $ns"
+    sleep 10
+  done
+  # One shared ALB via group.name, so a second hostname means the group split
+  # — which it does when a member disagrees on an exclusive annotation like
+  # `scheme`. Two ALBs is also two bills and only one of them is tunnelled to.
+  [[ -z "$ALB_HOST" || "$host" == "$ALB_HOST" ]] \
+    || fail "Airflow Ingresses landed on different ALBs ($ALB_HOST vs $host) — they must share the steam-infra-admin IngressGroup; check the exclusive annotations in k8s/airflow/values.yaml"
+  ALB_HOST="$host"
+  nbullet "$ns-ingress: $host"
 done
 ok "ALB hostname: $ALB_HOST"
 
@@ -46,5 +68,9 @@ disown "$_TUNNEL_PID" 2>/dev/null || true
 echo "$_TUNNEL_PID" >"$TUNNEL_PID_FILE"
 ok "tunnel running (pid $_TUNNEL_PID, $TUNNEL_PID_FILE)"
 
-printf '\n     %s%shttp://localhost:8888/airflow%s\n' "$BOLD" "$GREEN" "$RESET"
+printf '\n'
+for entry in "${AIRFLOW_INGRESSES[@]}"; do
+  read -r _ns path <<<"$entry"
+  printf '     %s%shttp://localhost:8888%s%s\n' "$BOLD" "$GREEN" "$path" "$RESET"
+done
 printf '     %s%shttp://localhost:8888/argocd%s\n' "$BOLD" "$GREEN" "$RESET"

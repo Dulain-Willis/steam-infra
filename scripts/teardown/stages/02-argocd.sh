@@ -35,7 +35,7 @@ ok "stopped (or wasn't running)"
 # finishes the others. Its PVC-free resources still die with the EKS
 # cluster in Stage 5 regardless -- except its own Ingress (#107), which
 # needs its ALB deleted explicitly; see below.
-CASCADE_APPS=(root airflow connectors kafka-cluster kafka-connect strimzi-operator)
+CASCADE_APPS=(root airflow airflow-staging connectors kafka-cluster kafka-connect strimzi-operator)
 
 nstep 2 "checking whether the cluster still exists..."
 if ! aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then

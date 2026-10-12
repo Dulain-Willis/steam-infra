@@ -37,8 +37,9 @@ env_complete || fail ".env incomplete"
 #
 # Both halves matter: a permitted write proving the identity works at all, and
 # a forbidden write proving the boundary is enforced by grants rather than by
-# convention. Add a pair of rows per role as later tickets add them — #116 CI,
-# #119 TRANSFORMER_STAGING — and nothing else changes.
+# convention. Add a pair of rows per role as later tickets add them — #116 CI —
+# and nothing else changes: grant_isolation_check reads the table, so the
+# number of identities in it is not baked into anything.
 #
 # The `developer` identity is the operator's STEAM_DEV_<NAME> user; its key is
 # the operator's own from .env rather than a tofu output, because
@@ -50,16 +51,27 @@ env_complete || fail ".env incomplete"
 # database" and "this schema does not exist" with the same error, so a deny case
 # aimed at a schema that silently stopped existing would pass while asserting
 # nothing. The allow case on the same target is what proves the target is really
-# there — e.g. dropping STEAM_PROD's PUBLIC schema would fail case 3 loudly
-# rather than quietly turning case 2 into a no-op.
+# there — e.g. dropping STEAM_PROD's PUBLIC schema would fail TRANSFORMER_PROD's
+# allow row loudly rather than quietly turning everyone else's deny row on it
+# into a no-op.
+#
+# The two transformers are each other's mirror: every build database is one
+# identity's allow target and the other identities' deny target, so "staging
+# cannot damage prod" and "prod is not reachable from dev" are both read off
+# the same table.
 GRANT_CASES=(
-  "loader       LOADER           $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA allow"
-  "loader       LOADER           $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
-  "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_PROD_DATABASE.PUBLIC                  allow"
-  "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
-  "developer    DEVELOPER        $SNOWFLAKE_DEV_DATABASE.PUBLIC                   allow"
-  "developer    DEVELOPER        $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
-  "developer    DEVELOPER        $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
+  "loader          LOADER              $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA allow"
+  "loader          LOADER              $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
+  "staging_airflow TRANSFORMER_STAGING $SNOWFLAKE_STAGING_DATABASE.PUBLIC               allow"
+  "staging_airflow TRANSFORMER_STAGING $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
+  "staging_airflow TRANSFORMER_STAGING $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
+  "prod_airflow    TRANSFORMER_PROD    $SNOWFLAKE_PROD_DATABASE.PUBLIC                  allow"
+  "prod_airflow    TRANSFORMER_PROD    $SNOWFLAKE_STAGING_DATABASE.PUBLIC               deny"
+  "prod_airflow    TRANSFORMER_PROD    $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
+  "developer       DEVELOPER           $SNOWFLAKE_DEV_DATABASE.PUBLIC                   allow"
+  "developer       DEVELOPER           $SNOWFLAKE_STAGING_DATABASE.PUBLIC               deny"
+  "developer       DEVELOPER           $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
+  "developer       DEVELOPER           $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
 )
 
 nstep 1 "applying terraform/snowflake..."
@@ -104,6 +116,8 @@ nstep 4 "checking the raw handoff: LOADER writes it, the readers read it..."
 # every dev build's stg layer selects from the landing tables, and the case
 # table above only probes writes — where DEVELOPER on the raw database must be
 # denied.
+grant_handoff_check loader LOADER staging_airflow TRANSFORMER_STAGING \
+  "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA"
 grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD \
   "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA"
 grant_handoff_check loader LOADER developer DEVELOPER \
