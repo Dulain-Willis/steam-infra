@@ -76,8 +76,9 @@ databases=$(snowflake_databases_present) \
 check_empty "Snowflake databases" "$databases"
 
 nstep 7 "Snowflake project roles..."
-# Listed by exact name rather than matched by pattern: LOADER and
-# TRANSFORMER_PROD share no prefix. The list lives in lib/env.sh.
+# Listed by exact name rather than matched by pattern: LOADER,
+# TRANSFORMER_PROD and DEVELOPER share no prefix. The list lives in
+# lib/env.sh.
 remaining_roles=""
 for role in "${SNOWFLAKE_PROJECT_ROLES[@]}"; do
   rows=$(sf_query "SHOW ROLES LIKE '$role'") \
@@ -86,13 +87,15 @@ for role in "${SNOWFLAKE_PROJECT_ROLES[@]}"; do
 done
 check_empty "Snowflake roles" "$remaining_roles"
 
-nstep 8 "Snowflake project service users..."
-# SHOW USERS leads with the user's name (SHOW DATABASES and SHOW ROLES lead
-# with created_on) — verified against the account. The pattern deliberately
-# does not match the operator's own user, which is not ours to remove.
+nstep 8 "Snowflake project users..."
+# The service users and the developers' STEAM_DEV_<NAME> users both match the
+# pattern. SHOW USERS leads with the user's name (SHOW DATABASES and SHOW
+# ROLES lead with created_on) — verified against the account. The pattern
+# deliberately does not match the operator's own user, which is not ours to
+# remove.
 rows=$(sf_query "SHOW USERS LIKE '$SNOWFLAKE_PROJECT_USER_PATTERN'") \
-  || fail "could not query Snowflake for the project service users — see the error above"
-check_empty "Snowflake service users" "$(cut -f1 <<<"$rows" | paste -sd' ' -)"
+  || fail "could not query Snowflake for the project users — see the error above"
+check_empty "Snowflake users" "$(cut -f1 <<<"$rows" | paste -sd' ' -)"
 
 if (( ${#problems[@]} )); then
   fail "\$0 verification failed: ${#problems[@]} problem(s) — see above"

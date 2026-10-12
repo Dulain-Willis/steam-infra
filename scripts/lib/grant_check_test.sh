@@ -57,15 +57,28 @@ source "$REPO_ROOT/scripts/lib/grant_check.sh"
 
 RAW="STEAM_RAW.STEAM_RDS"
 PROD="STEAM_PROD.PUBLIC"
+DEV="STEAM_DEV.PUBLIC"
 CASES=(
   "loader       LOADER           $RAW  allow"
   "loader       LOADER           $PROD deny"
   "prod_airflow TRANSFORMER_PROD $PROD allow"
   "prod_airflow TRANSFORMER_PROD $RAW  deny"
+  "developer    DEVELOPER        $DEV  allow"
+  "developer    DEVELOPER        $PROD deny"
+  "developer    DEVELOPER        $RAW  deny"
 )
 
-CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD"
-CORRECT_READABLE="LOADER|$RAW TRANSFORMER_PROD|$RAW"
+CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV"
+CORRECT_READABLE="LOADER|$RAW TRANSFORMER_PROD|$RAW DEVELOPER|$RAW"
+
+# The developer identity's key is the operator's own, already on disk, rather
+# than a tofu-generated one — the module registers the operator's existing
+# public key on the user it creates, so there is no private key to output.
+# grant_check_local_key is that seam; this file is where it gets exercised.
+DEV_KEY_FILE="$(mktemp)"
+printf 'KEYMATERIAL-operator\n' >"$DEV_KEY_FILE"
+EMPTY_KEY_FILE="$(mktemp)"
+trap 'rm -f "$DEV_KEY_FILE" "$EMPTY_KEY_FILE"' EXIT
 
 # run_scenario "name" pass|fail [CASE...] -- runs the check in a subshell with
 # WRITABLE/READABLE/EMPTY_KEY_FOR taken from the environment, and asserts the
@@ -90,8 +103,10 @@ run_scenario() {
       READABLE="${READABLE:-$CORRECT_READABLE}"
       EMPTY_KEY_FOR="${EMPTY_KEY_FOR:-}"
       export WRITABLE READABLE EMPTY_KEY_FOR
-      grant_isolation_check "${cases[@]}" \
-        && grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW"
+      grant_check_local_key developer SVC_developer "${DEV_KEY:-$DEV_KEY_FILE}" \
+        && grant_isolation_check "${cases[@]}" \
+        && grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW" \
+        && grant_handoff_check loader LOADER developer DEVELOPER "$RAW"
       grant_check_cleanup
     } 2>&1
   )
@@ -137,6 +152,48 @@ EMPTY_KEY_FOR=prod_airflow \
 
 # 7. A malformed case must not be treated as a denial.
 run_scenario "typo'd expectation: must be caught" fail "loader LOADER $PROD allowed"
+
+# 8. DEVELOPER can write prod — the boundary #115 exists to enforce, and the
+#    one a dev build must be physically unable to cross.
+WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV DEVELOPER|$PROD" \
+  run_scenario "DEVELOPER can write STEAM_PROD: must be caught" fail
+
+# 9. DEVELOPER can write the landing database. A read grant on STEAM_RAW must
+#    not come with a write.
+WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV DEVELOPER|$RAW" \
+  run_scenario "DEVELOPER can write STEAM_RAW: must be caught" fail
+
+# 10. DEVELOPER cannot write its own database — a dev build would fail, and a
+#     check that only probed denials would call that a pass.
+WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD" \
+  run_scenario "DEVELOPER cannot write STEAM_DEV: must be caught" fail
+
+# 11. DEVELOPER cannot read the landing tables. Every dev build's stg layer
+#     reads them, so this is the grant dev work depends on; only the handoff
+#     check sees it, exactly as for TRANSFORMER_PROD in scenario 5.
+READABLE="LOADER|$RAW TRANSFORMER_PROD|$RAW" \
+  run_scenario "DEVELOPER cannot read the landing schema: must be caught" fail
+
+# 12. The operator's key is missing or empty. Unlike the tofu-generated keys,
+#     this one is a path from .env, so a wrong path or a key that was never
+#     created has to be caught at registration — an identity reached only by
+#     `deny` cases would otherwise record "could not authenticate" as
+#     "denied" and pass while asserting nothing. Asserted on
+#     grant_check_local_key directly, because a scenario would also fail for
+#     the uninteresting reason that the allow case could not run.
+check_registration_fails() {
+  local name="$1" path="$2" out status
+  out=$( ( grant_check_local_key developer SVC_developer "$path" ) 2>&1 )
+  status=$?
+  if ((status == 0)); then
+    printf 'FAIL  %s — grant_check_local_key accepted it:\n%s\n' "$name" "$out"
+    failures=$((failures + 1))
+  else
+    printf 'ok    %s\n' "$name"
+  fi
+}
+check_registration_fails "empty local key file: must be rejected" "$EMPTY_KEY_FILE"
+check_registration_fails "missing local key file: must be rejected" "/nonexistent/operator.p8"
 
 if ((failures)); then
   printf '\n%d scenario(s) behaved wrongly\n' "$failures" >&2

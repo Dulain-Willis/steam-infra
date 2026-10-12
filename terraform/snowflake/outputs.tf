@@ -24,6 +24,15 @@ output "loader_private_key" {
   sensitive   = true
 }
 
+# The operator's developer user. There is no matching _private_key output:
+# this user carries the operator's own public key, so tofu never holds the
+# private half — bring-up's grant check reads it from .env instead
+# (grant_check_local_key in scripts/lib/grant_check.sh).
+output "operator_developer_user" {
+  description = "Snowflake user for the first entry in var.developers, the operator"
+  value       = snowflake_user.developer[var.developers[0].name].name
+}
+
 output "prod_airflow_user" {
   description = "Service user prod Airflow runs dbt as"
   value       = snowflake_service_user.this["prod_airflow"].name

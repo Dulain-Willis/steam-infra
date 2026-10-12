@@ -7,6 +7,13 @@
 # |------------------|-----------|------------|
 # | LOADER           | —         | STEAM_RAW  |
 # | TRANSFORMER_PROD | STEAM_RAW | STEAM_PROD |
+# | DEVELOPER        | STEAM_RAW | STEAM_DEV  |
+#
+# DEVELOPER has no grant whatsoever on STEAM_PROD, not even read: only the CI
+# identity (#116) needs prod read, for slim-CI deferral, and a developer
+# running dbt does a full build into their own schemas with no --defer. That
+# absence is what makes "a dev build changes nothing in STEAM_PROD" provable
+# by bring-up's grant check rather than asserted (#112's Q1).
 #
 # Nothing in the pipeline runs as ACCOUNTADMIN any more. Tofu's own provider
 # identity still does, because something has to create roles and users at
@@ -32,11 +39,15 @@ locals {
   warehouse = "COMPUTE_WH"
 
   # Every role that runs SQL needs USAGE on it. Add roles here as later
-  # tickets add them (#115 DEVELOPER, #116 CI, #119 TRANSFORMER_STAGING).
+  # tickets add them (#116 CI, #119 TRANSFORMER_STAGING).
   compute_roles = [
     snowflake_account_role.loader.name,
     snowflake_account_role.transformer_prod.name,
+    snowflake_account_role.developer.name,
   ]
+
+  # var.developers keyed by name, for the for_each'd user and role grant.
+  developers = { for developer in var.developers : developer.name => developer }
 
   # One service user per non-human identity. Each gets exactly one role, a
   # tofu-generated key pair, and a pair of outputs (<key>_user,
@@ -63,6 +74,11 @@ resource "snowflake_account_role" "loader" {
 resource "snowflake_account_role" "transformer_prod" {
   name    = "TRANSFORMER_PROD"
   comment = "reads STEAM_RAW, writes only STEAM_PROD"
+}
+
+resource "snowflake_account_role" "developer" {
+  name    = "DEVELOPER"
+  comment = "reads STEAM_RAW, writes only STEAM_DEV; no grant on STEAM_STAGING or STEAM_PROD"
 }
 
 resource "snowflake_grant_privileges_to_account_role" "warehouse" {
@@ -210,6 +226,144 @@ resource "snowflake_grant_privileges_to_account_role" "prod_future_schemas" {
   on_schema {
     future_schemas_in_database = snowflake_database.prod.name
   }
+}
+
+# --- DEVELOPER: read STEAM_RAW ----------------------------------------------
+#
+# The same five grants TRANSFORMER_PROD has: every dev build's stg layer reads
+# the landing tables, and `future` matters because the sink creates each table
+# on that topic's first record, which can be long after this apply.
+
+resource "snowflake_grant_privileges_to_account_role" "developer_raw_database" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE"]
+
+  on_account_object {
+    object_type = "DATABASE"
+    object_name = snowflake_database.raw.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_raw_schemas" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE"]
+  depends_on        = [snowflake_schema.source_system]
+
+  on_schema {
+    all_schemas_in_database = snowflake_database.raw.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_raw_future_schemas" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE"]
+
+  on_schema {
+    future_schemas_in_database = snowflake_database.raw.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_raw_tables" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["SELECT"]
+
+  on_schema_object {
+    all {
+      object_type_plural = "TABLES"
+      in_database        = snowflake_database.raw.name
+    }
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_raw_future_tables" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["SELECT"]
+
+  on_schema_object {
+    future {
+      object_type_plural = "TABLES"
+      in_database        = snowflake_database.raw.name
+    }
+  }
+}
+
+# --- DEVELOPER: write STEAM_DEV ---------------------------------------------
+#
+# Every developer creates their own dbt_<name>_* schemas on their first build,
+# so CREATE SCHEMA on the database is the load-bearing grant; they own what
+# they create. The schema-level grants cover schemas they did not create —
+# PUBLIC, and a teammate's.
+#
+# Developers deliberately share one role rather than getting one each: this is
+# a shared sandbox database, and the schema prefix, not a grant, is what keeps
+# two developers out of each other's tables.
+
+resource "snowflake_grant_privileges_to_account_role" "developer_dev_database" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE", "CREATE SCHEMA"]
+
+  on_account_object {
+    object_type = "DATABASE"
+    object_name = snowflake_database.dev.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_dev_schemas" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
+
+  on_schema {
+    all_schemas_in_database = snowflake_database.dev.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "developer_dev_future_schemas" {
+  account_role_name = snowflake_account_role.developer.name
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
+
+  on_schema {
+    future_schemas_in_database = snowflake_database.dev.name
+  }
+}
+
+# --- Developer users --------------------------------------------------------
+#
+# snowflake_user, not snowflake_service_user: the v2 provider split the two,
+# and the service variant has no password or MFA surface and cannot log into
+# the UI — which is right for the pipeline's identities and wrong for a human.
+#
+# The operator's entry creates STEAM_DEV_DULAIN rather than adopting their
+# existing DULAIN user, for three reasons. Adopting it would mean tofu
+# managing the account's ACCOUNTADMIN human: `tofu destroy` — which teardown
+# runs every session — would delete the user tofu itself authenticates as,
+# locking the operator out of their own account with no way back in. It would
+# also need an import before the first apply, and it would leave the operator
+# developing as ACCOUNTADMIN, which is exactly what #112 is removing. The new
+# user carries the operator's *existing* public key, so nothing new has to be
+# generated or distributed and their current private key authenticates as
+# either user.
+#
+# The STEAM_ prefix is also load-bearing: lib/env.sh's inventory matches
+# project users by STEAM\_%, so teardown proves these are gone without a
+# second signal, while the operator's own DULAIN stays out of it.
+
+resource "snowflake_user" "developer" {
+  for_each          = local.developers
+  name              = "STEAM_DEV_${upper(each.key)}"
+  comment           = "developer ${each.key} — runs dbt into their own schemas in STEAM_DEV"
+  default_role      = snowflake_account_role.developer.name
+  default_warehouse = local.warehouse
+
+  # One line, no PEM header or trailer — same requirement and same expression
+  # as the service users below, so either form can be pasted into
+  # var.developers.
+  rsa_public_key = replace(each.value.rsa_public_key, "/-----[A-Z ]+-----|\\n/", "")
+}
+
+resource "snowflake_grant_account_role" "developer" {
+  for_each  = local.developers
+  role_name = snowflake_account_role.developer.name
+  user_name = snowflake_user.developer[each.key].name
 }
 
 # --- Service users ----------------------------------------------------------
