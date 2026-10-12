@@ -19,8 +19,12 @@ env_complete || fail ".env incomplete"
 nstep 1 "checking for Snowflake resources left to destroy..."
 run_step "tofu init (snowflake)" tf_snowflake init -input=false
 if [[ -z "$(sf_leftovers)" ]]; then
-  # Nothing in state. A database created outside this module (an older
-  # session, a hand-rolled CREATE) is still caught by Stage 6's $0 verify.
+  # Nothing in state. The database is only ever created by this module now,
+  # so if it exists anyway something made it outside tofu — fail here with
+  # the fix rather than at Stage 6's $0 verify with just the symptom.
+  if snowflake_database_exists; then
+    fail "$SNOWFLAKE_DATABASE exists but terraform/snowflake's state is empty — import it (tofu -chdir=terraform/snowflake import snowflake_database.steam_project $SNOWFLAKE_DATABASE) and re-run, or drop it by hand"
+  fi
   skip "the Snowflake module's state is empty"
 fi
 
