@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 5/6: destroy everything except the tfstate bucket. The bucket has
+# Stage 5: destroy everything except the tfstate bucket. The bucket has
 # prevent_destroy = true (so state survives for the next session); a plain
 # `tofu destroy` would abort before deleting anything, so those resources
 # are excluded instead.
@@ -11,7 +11,7 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 5 6 "tofu destroy"
+stage 5 "tofu destroy"
 
 EXCLUDES=()
 for r in "${TFSTATE_RESOURCES[@]}"; do EXCLUDES+=(-exclude="$r"); done
