@@ -60,6 +60,21 @@ export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
   SNOWFLAKE_PROD_DATABASE SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA \
   SNOWFLAKE_WAREHOUSE
 
+# The Airflow environments on the cluster, in the order to report them.
+#
+# Each name is, by convention, four things at once: the ArgoCD Application
+# (argocd/apps/airflow*.yaml), the Helm release the chart derives its resource
+# names from, the namespace it deploys into, and the ALB path prefix it is
+# served at (`/<name>`). That is why one list can drive bring-up's namespace
+# creation, secrets, Application wait, Deployment health checks and printed
+# links. scripts/check-airflow-values.sh asserts the path half of the
+# convention against the rendered Ingress, so it cannot quietly stop holding.
+#
+# Add an environment here, as k8s/airflow/values-<env>.yaml + its image file,
+# and as an argocd/apps Application, together.
+# shellcheck disable=SC2034  # read by stage scripts that source this file
+AIRFLOW_ENVIRONMENTS=(airflow airflow-staging)
+
 # Every Snowflake object terraform/snowflake owns, by name. Bring-up's
 # leftover detection, its verify step and teardown's $0 inventory all walk
 # these, so "did we leave anything behind" can't drift from "what do we

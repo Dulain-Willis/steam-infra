@@ -23,9 +23,9 @@ TUNNEL_PID_FILE="$LOG_DIR/admin-alb-tunnel.pid"
 BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 [[ -n "$BASTION_ID" ]] || fail "missing bastion_instance_id output — did Stage 3 (AWS) run?"
 
-# Every Airflow environment's api-server Ingress, as "NAMESPACE PATH". The
-# chart names the Ingress <release>-ingress and argocd/apps uses the release
-# name as the namespace, so both are the environment's name.
+# One Ingress per Airflow environment (lib/env.sh's AIRFLOW_ENVIRONMENTS): the
+# chart names it <release>-ingress, argocd/apps uses the same name as the
+# namespace, and the path it claims is /<name> — see that list.
 #
 # Looked up by name rather than `{.items[0]}`: there is more than one Airflow
 # now, and an order-dependent pick over every Ingress in a namespace would
@@ -35,15 +35,10 @@ BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 # is waited on separately: a member whose rule never made it onto the ALB —
 # the failure mode of a wrong exclusive annotation or a bad path — leaves that
 # environment with no hostname while the others look fine.
-AIRFLOW_INGRESSES=(
-  "airflow /airflow"
-  "airflow-staging /airflow-staging"
-)
 
 nstep 1 "waiting for the ALB hostname on every Airflow Ingress..."
 ALB_HOST=""
-for entry in "${AIRFLOW_INGRESSES[@]}"; do
-  read -r ns _path <<<"$entry"
+for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
   host=""
   deadline=$((SECONDS + 300))
   until [[ -n "$host" ]]; do
@@ -69,8 +64,7 @@ echo "$_TUNNEL_PID" >"$TUNNEL_PID_FILE"
 ok "tunnel running (pid $_TUNNEL_PID, $TUNNEL_PID_FILE)"
 
 printf '\n'
-for entry in "${AIRFLOW_INGRESSES[@]}"; do
-  read -r _ns path <<<"$entry"
-  printf '     %s%shttp://localhost:8888%s%s\n' "$BOLD" "$GREEN" "$path" "$RESET"
+for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
+  printf '     %s%shttp://localhost:8888/%s%s\n' "$BOLD" "$GREEN" "$ns" "$RESET"
 done
 printf '     %s%shttp://localhost:8888/argocd%s\n' "$BOLD" "$GREEN" "$RESET"

@@ -12,8 +12,8 @@
 #
 # There is more than one Airflow: prod in the `airflow` namespace and staging
 # in `airflow-staging`, each its own Helm release with its own Secrets, its
-# own metadata database and its own Snowflake service user. AIRFLOW_ENVS below
-# is the single list driving all of that.
+# own metadata database and its own Snowflake service user. lib/env.sh's
+# AIRFLOW_ENVIRONMENTS is the single list driving all of that.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -24,24 +24,23 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 
 stage 5 "Cluster"
 
-# The Airflow environments, each mapped to the terraform/snowflake service
-# user it runs dbt as. The key is the ArgoCD Application name, which the
-# chart also uses as the Helm release name *and* which argocd/apps uses as the
-# destination namespace — so it is simultaneously the namespace to create
-# secrets in, the Application to wait for, and the prefix of the Deployments
-# to health-check. One list, three uses, no third place to forget.
+# Which terraform/snowflake service user each Airflow environment runs dbt
+# as. The environments themselves are lib/env.sh's AIRFLOW_ENVIRONMENTS — see
+# that list for why one name is simultaneously the Application, the Helm
+# release, the namespace and the URL prefix. This map holds only the part
+# that is this stage's business.
 #
-# Each environment gets its own namespace, its own Secrets and (via the
-# chart's per-release Postgres) its own metadata database. Add an environment
-# here and to k8s/airflow/values-<env>.yaml + argocd/apps/ together.
-declare -A AIRFLOW_ENVS=(
+# Each environment therefore gets its own namespace, its own Secrets, its own
+# Snowflake identity and (via the chart's per-release Postgres) its own
+# metadata database.
+declare -A AIRFLOW_SNOWFLAKE_IDENTITY=(
   [airflow]=prod_airflow
   [airflow-staging]=staging_airflow
 )
 
 # Every Application the root app-of-apps (argocd/apps) is expected to bring
 # up. Kept as one list so "all healthy" and "count matches" can't drift.
-EXPECTED_APPS=(root argocd alb-controller airflow-storageclass connectors kafka-cluster kafka-connect strimzi-operator "${!AIRFLOW_ENVS[@]}")
+EXPECTED_APPS=(root argocd alb-controller airflow-storageclass connectors kafka-cluster kafka-connect strimzi-operator "${AIRFLOW_ENVIRONMENTS[@]}")
 
 CONNECT_POD="steam-infra-connect-0"
 CONNECTORS=(debezium-postgres-source snowflake-sink)
@@ -103,7 +102,7 @@ fi
 
 nstep 3 "creating/refreshing secrets..."
 kubectl create namespace kafka --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-for ns in "${!AIRFLOW_ENVS[@]}"; do
+for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 done
 
@@ -153,8 +152,8 @@ kubectl create secret generic snowflake-account -n kafka \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 ok "kafka: snowflake-keypair ($LOADER_USER, private_key stripped), snowflake-account"
 
-for ns in "${!AIRFLOW_ENVS[@]}"; do
-  identity="${AIRFLOW_ENVS[$ns]}"
+for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
+  identity="${AIRFLOW_SNOWFLAKE_IDENTITY[$ns]}"
   airflow_user=$(sf_output "${identity}_user")
   airflow_key=$(sf_output "${identity}_private_key")
 
@@ -229,7 +228,7 @@ ok "connectors RUNNING: ${CONNECTORS[*]}"
 # and each environment is its own release in its own namespace. Checked one
 # environment at a time so the failure message names which one — "Airflow
 # never became ready" with two of them is half a diagnosis.
-for ns in "${!AIRFLOW_ENVS[@]}"; do
+for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
   nsub "waiting for $ns scheduler + api-server ready..."
   deadline=$((SECONDS + 600))
   until deployment_ready "$ns" "$ns-scheduler" && deployment_ready "$ns" "$ns-api-server"; do

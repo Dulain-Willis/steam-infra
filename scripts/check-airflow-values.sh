@@ -34,11 +34,12 @@ VALUES_DIR="$REPO_ROOT/k8s/airflow"
 # overlay nothing deploys fails here instead of looking fine and being dead.
 app_for() { grep -ls "values-$1\.yaml" "$REPO_ROOT"/argocd/apps/*.yaml || true; }
 
-# Comment and blank lines are skipped rather than assumed absent: the version
-# is read from the line after `chart: airflow`, and a comment between the two
+# The `targetRevision:` *after* `chart: airflow`, not simply the line after
+# it: an Application has two targetRevision lines (chart version and git ref)
+# and a comment may sit between the chart and its version, either of which
 # would otherwise be returned as the chart version.
 chart_version_of() {
-  awk '/chart: airflow$/{f=1; next} f && /^[[:space:]]*(#|$)/{next} f{print $2; exit}' "$1"
+  awk '/chart: airflow$/{f=1} f && /targetRevision:/{print $2; exit}' "$1"
 }
 
 # Values that identify one environment -- a match in the base-only render
@@ -110,6 +111,12 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
     echo "FAIL  $env_name's Ingress claims path '$path' -- the overlay must set ingress.apiServer.path"; status=1
   elif [[ -z $order ]]; then
     echo "FAIL  $env_name's Ingress has no alb.ingress.kubernetes.io/group.order ($path overlaps other members at the default order 0)"; status=1
+  elif [[ $path != "/$release" ]]; then
+    # lib/env.sh's AIRFLOW_ENVIRONMENTS treats the Application name as the URL
+    # prefix too, which is how bring-up prints working links and waits on the
+    # right Ingress without a second list. Asserted here so that convention
+    # cannot quietly stop holding.
+    echo "FAIL  $env_name's Ingress claims $path but its release is $release -- bring-up prints /$release (scripts/lib/env.sh AIRFLOW_ENVIRONMENTS)"; status=1
   else
     echo "ok    $env_name's Ingress: $path, $order"
   fi
