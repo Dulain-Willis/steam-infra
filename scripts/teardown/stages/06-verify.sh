@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 6/6: prove $0 — nothing billable left in AWS or Snowflake. This AWS
+# Stage 6: prove $0 — nothing billable left in AWS or Snowflake. This AWS
 # account is dedicated to this project (see CLAUDE.md/CONTEXT.md), so an
 # account-wide check in the project region is simpler than tag-matching and
 # also catches anything Kubernetes created that Terraform never knew about
@@ -12,7 +12,7 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 6 6 "Verify \$0"
+stage 6 "Verify \$0"
 
 problems=()
 
@@ -62,7 +62,9 @@ fi
 
 nstep 6 "Snowflake database $SNOWFLAKE_DATABASE..."
 env_complete || fail ".env incomplete"
-if uv run "$REPO_ROOT/scripts/lib/snowflake_db.py" database-exists >/dev/null 2>&1; then
+# Asks Snowflake, not tofu state — so a database left behind outside the
+# module (an older session, a hand-rolled CREATE) still counts as a problem.
+if snowflake_database_exists; then
   warn "$SNOWFLAKE_DATABASE still exists"
   problems+=("Snowflake database: $SNOWFLAKE_DATABASE")
 else

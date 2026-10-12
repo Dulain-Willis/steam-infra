@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 2/6: delete the ArgoCD Applications so Kubernetes-created AWS
+# Stage 2: delete the ArgoCD Applications so Kubernetes-created AWS
 # resources (PVC-backed EBS volumes, any load balancers) are actually gone
 # on the AWS side before Stage 5's `tofu destroy` — otherwise they're
 # orphaned (nothing in Terraform state references them, and the cluster
@@ -12,9 +12,9 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 2 6 "ArgoCD Applications"
+stage 2 "ArgoCD Applications"
 
-# Stop the background tunnel Stage 6 of bring-up (#109) started pointing at
+# Stop the background tunnel Stage 7 of bring-up (#109) started pointing at
 # the admin ALB, before that ALB gets deleted below — nothing left running
 # against a target that's about to disappear.
 TUNNEL_PID_FILE="$LOG_DIR/admin-alb-tunnel.pid"
@@ -96,7 +96,7 @@ nstep 7 "waiting for Applications, PVCs, and load balancers to be gone..."
 # The admin ALB (#107) isn't a Service type=LoadBalancer object — it's
 # created by the AWS Load Balancer Controller from Ingress objects, so
 # lbs_left above never catches it. Checked separately via describe-load-
-# balancers directly (account-wide, like Stage 6/6's final $0 verify — this
+# balancers directly (account-wide, like Stage 6's final $0 verify — this
 # account is dedicated to the project), same deadline, same reasoning: once
 # Stage 5 destroys the cluster (and alb-controller's pod with it), nothing
 # is left to ever delete this ALB if it isn't gone by then.

@@ -5,7 +5,7 @@
 #     "psycopg2-binary==2.9.10",
 # ]
 # ///
-"""Schema-applied guard for bring-up Stage 3 (Database).
+"""Schema-applied guard for bring-up Stage 4 (Database).
 
 db/schema.sql uses bare `create table` (no `if not exists`), so re-running it
 against an already-applied schema fails outright. Run via

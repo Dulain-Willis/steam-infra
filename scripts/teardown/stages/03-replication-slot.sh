@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 3/6: drop Debezium's replication slot. Safety net only — RDS is
+# Stage 3: drop Debezium's replication slot. Safety net only — RDS is
 # destroyed with skip_final_snapshot in Stage 5, so the slot dies with it;
 # this only matters if the destroy dies partway and RDS survives, in which
 # case an orphaned slot pins WAL on the instance indefinitely.
@@ -14,7 +14,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 3 6 "Replication slot"
+stage 3 "Replication slot"
 
 nstep 1 "checking whether RDS still exists..."
 if ! aws rds describe-db-instances --db-instance-identifier "$RDS_INSTANCE_ID" >/dev/null 2>&1; then

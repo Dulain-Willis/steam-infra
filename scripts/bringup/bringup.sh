@@ -2,7 +2,7 @@
 # Bring-up entrypoint: sequences the numbered stages in bringup/stages/.
 # Each stage is its own executable script (sources lib/ itself) so it can
 # also be run standalone, e.g.:
-#   bringup/stages/02-aws.sh
+#   bringup/stages/03-aws.sh
 #
 # Flags:
 #   --start-from N   skip stages before N (resuming after a partial run).
@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/scripts/bringup/stages" -maxdepth 1 -name '*.sh' | sort)
+mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/scripts/bringup/stages" -maxdepth 1 -name '[0-9][0-9]-*.sh' | sort)
 
 banner "steam-infra bring-up"
 

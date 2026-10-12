@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# .env loading + fixed values + the tofu wrapper, shared by bring-up and
-# teardown. Sourced by stage scripts — never run directly. Depends on
-# scripts/lib/output.sh already being sourced (uses warn/note).
+# .env loading + fixed values + the two tofu wrappers (one per root module)
+# + the Snowflake query helpers, shared by bring-up and teardown. Sourced by
+# stage scripts — never run directly. Depends on scripts/lib/output.sh
+# already being sourced (uses warn/note).
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TF_DIR="$REPO_ROOT/terraform"
+TF_SNOWFLAKE_DIR="$REPO_ROOT/terraform/snowflake"
 ENV_FILE="$REPO_ROOT/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -40,6 +42,40 @@ export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
 
 tf() { tofu -chdir="$TF_DIR" "$@"; }
 
+# The Snowflake root module (own state, own key in the same bucket), so a
+# Snowflake change can't block an AWS plan or the other way round.
+tf_snowflake() { tofu -chdir="$TF_SNOWFLAKE_DIR" "$@"; }
+
+# Inputs for terraform/snowflake. The v2 provider wants the account
+# identifier split into organization_name + account_name; .env keeps the
+# combined <ORG>-<ACCOUNT> SNOWFLAKE_ACCOUNT too, because the Python
+# connector, the Kafka sink and dbt all want that form.
+export TF_VAR_organization_name="${SNOWFLAKE_ORGANIZATION_NAME:-}"
+export TF_VAR_account_name="${SNOWFLAKE_ACCOUNT_NAME:-}"
+export TF_VAR_user="${SNOWFLAKE_USER:-}"
+export TF_VAR_private_key_path="${SNOWFLAKE_PRIVATE_KEY_PATH:-}"
+
+# sf_query "SQL" [--role R] — one statement, rows on stdout (tab-separated),
+# non-zero exit if Snowflake rejects it. The only Snowflake access path left
+# in the scripts; creating and dropping is terraform/snowflake's job.
+sf_query() { uv run "$REPO_ROOT/scripts/lib/snowflake_query.py" "$@"; }
+
+# snowflake_database_exists [NAME] — asks Snowflake, rather than trusting a
+# tofu apply or destroy. Used by bring-up's and teardown's verify steps.
+#
+# A failed query is NOT "absent": an expired key or an unreachable account
+# would otherwise let teardown report $0 with the database still billing. So
+# the query's status is checked separately from its output, and a failure is
+# fatal (fail exits, even from inside an `if` condition).
+snowflake_database_exists() {
+  local name="${1:-$SNOWFLAKE_DATABASE}" out
+  # '' is how a single quote is escaped inside a Snowflake string literal.
+  if ! out=$(sf_query "SHOW DATABASES LIKE '${name//\'/\'\'}'"); then
+    fail "could not query Snowflake for database $name — see the error above"
+  fi
+  [[ -n "$out" ]]
+}
+
 # Resources that survive a full teardown (the tfstate bucket has
 # prevent_destroy = true). Shared by teardown Stage 5's destroy exclusions
 # and bring-up Stage 1's leftover detection — both need "is anything left
@@ -57,8 +93,22 @@ tf_leftovers() {
   tf state list 2>/dev/null | grep -v '^data\.' | grep -vFxf <(printf '%s\n' "${TFSTATE_RESOURCES[@]}") || true
 }
 
+# sf_leftovers: same idea for the Snowflake root module. Nothing in it
+# survives a teardown, so anything at all in state is a leftover. Requires a
+# prior `tf_snowflake init`.
+sf_leftovers() {
+  tf_snowflake state list 2>/dev/null | grep -v '^data\.' || true
+}
+
 # Values a person copying the repo must supply — see .env.example.
-REQUIRED_ENV_VARS=(SNOWFLAKE_ACCOUNT SNOWFLAKE_USER SNOWFLAKE_PRIVATE_KEY_PATH AIRFLOW_ALERT_EMAIL)
+REQUIRED_ENV_VARS=(
+  SNOWFLAKE_ACCOUNT
+  SNOWFLAKE_ORGANIZATION_NAME
+  SNOWFLAKE_ACCOUNT_NAME
+  SNOWFLAKE_USER
+  SNOWFLAKE_PRIVATE_KEY_PATH
+  AIRFLOW_ALERT_EMAIL
+)
 
 # env_complete: reports every problem with .env, returns non-zero if any.
 env_complete() {
@@ -73,6 +123,15 @@ env_complete() {
   fi
   if [[ ! -f "$SNOWFLAKE_PRIVATE_KEY_PATH" ]]; then
     warn "SNOWFLAKE_PRIVATE_KEY_PATH does not exist: $SNOWFLAKE_PRIVATE_KEY_PATH"
+    return 1
+  fi
+  # The split form (tofu) and the combined form (Python connector, Kafka
+  # sink, dbt) must name the same account, or tofu and the verify step would
+  # silently talk to two different Snowflake accounts. Compared case-folded:
+  # account identifiers are case-insensitive, and the account URL spells them
+  # lowercase while CURRENT_ORGANIZATION_NAME() spells them uppercase.
+  if [[ "${SNOWFLAKE_ACCOUNT^^}" != "${SNOWFLAKE_ORGANIZATION_NAME^^}-${SNOWFLAKE_ACCOUNT_NAME^^}" ]]; then
+    warn "SNOWFLAKE_ACCOUNT ($SNOWFLAKE_ACCOUNT) is not SNOWFLAKE_ORGANIZATION_NAME-SNOWFLAKE_ACCOUNT_NAME ($SNOWFLAKE_ORGANIZATION_NAME-$SNOWFLAKE_ACCOUNT_NAME)"
     return 1
   fi
   return 0

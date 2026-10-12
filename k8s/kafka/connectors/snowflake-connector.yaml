@@ -10,10 +10,10 @@
 #     in (kafka-connect.yaml, #42) and config.providers=secrets enabled
 #     there for the ${secrets:...} ref below
 #   - the snowflake-keypair Secret in the `kafka` namespace
-#     (bringup/stages/04-cluster.sh, #43) — private key registered
+#     (bringup/stages/05-cluster.sh, #43) — private key registered
 #     to snowflake.user.name below via ALTER USER ... SET RSA_PUBLIC_KEY
 #   - the snowflake-account Secret in the `kafka` namespace (account, user
-#     keys — bringup/stages/04-cluster.sh)
+#     keys — bringup/stages/05-cluster.sh)
 #   - the debezium-postgres-source connector already producing the 16
 #     steam.public.* topics (debezium-connector.yaml, #44, #10)
 #

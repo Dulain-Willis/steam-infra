@@ -48,7 +48,7 @@ instantaneous.
 
 Re-measure after changing `tick_min_seconds`/`tick_max_seconds` in
 `terraform/generator.tf` or `EVENT_WEIGHTS` in `generator/generator.py`:
-open the tunnel (`lib/tunnel.sh`, same as `bringup/stages/03-database.sh`
+open the tunnel (`lib/tunnel.sh`, same as `bringup/stages/04-database.sh`
 uses), sum row counts across the event tables above, wait N seconds, sum
 again, and divide the delta by N.
 
@@ -65,7 +65,7 @@ select
 ## Seed before first run
 
 The generator writes purchases against existing users/games — it does not
-create them. `bringup/stages/03-database.sh` runs `generator/seed.py` once
+create them. `bringup/stages/04-database.sh` runs `generator/seed.py` once
 the schema is applied, before the generator starts, or purchase ticks
 would find empty `users`/`games` tables.
 
@@ -121,8 +121,8 @@ minute or two for `dnf install docker` + `docker build` before logs appear.
 
 If the generator instance is created in the same `tofu apply` as a fresh
 RDS instance (rather than after schema/seed already exist, as
-`bringup/bringup.sh` orders it — the generator is its own stage 5, held
-back until after stage 3 seeds the database), it starts ticking against
+`bringup/bringup.sh` orders it — the generator is its own stage 6, held
+back until after stage 4 seeds the database), it starts ticking against
 empty `users`/`games` tables — `purchase`/`playtime_session`/etc ticks
 throw on the empty `select ... order by random() limit 1` and the
 container crash-loops (`--restart unless-stopped` keeps retrying) until

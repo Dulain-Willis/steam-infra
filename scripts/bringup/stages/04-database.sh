@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 3/6: database. One SSM tunnel to RDS (shared scripts/lib/tunnel.sh) →
+# Stage 4: database. One SSM tunnel to RDS (shared scripts/lib/tunnel.sh) →
 # apply db/schema.sql only if absent (schema.sql uses bare `create table`,
 # so re-applying it against an existing schema fails outright — the guard
 # lives in scripts/lib/schema_guard.py) → seed only if empty → verify the Debezium
@@ -17,7 +17,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 3 6 "Database"
+stage 4 "Database"
 
 CAPTURED_TABLES=(
   users games game_prices marketing_campaigns purchases ownership_grants
@@ -30,7 +30,7 @@ BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 RDS_HOST=$(tf output -raw rds_endpoint 2>/dev/null || true)
 DB_PASSWORD=$(tf output -raw db_password 2>/dev/null || true)
 [[ -n "$BASTION_ID" && -n "$RDS_HOST" && -n "$DB_PASSWORD" ]] \
-  || fail "missing bastion/rds outputs — did Stage 2 (AWS) run?"
+  || fail "missing bastion/rds outputs — did Stage 3 (AWS) run?"
 
 nstep 1 "opening SSM tunnel to RDS through the bastion..."
 open_rds_tunnel "$BASTION_ID" "$RDS_HOST" || fail "tunnel never came up"
