@@ -153,7 +153,12 @@ kubectl create secret generic snowflake-account -n kafka \
 ok "kafka: snowflake-keypair ($LOADER_USER, private_key stripped), snowflake-account"
 
 for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
-  identity="${AIRFLOW_SNOWFLAKE_IDENTITY[$ns]}"
+  identity="${AIRFLOW_SNOWFLAKE_IDENTITY[$ns]:-}"
+  # Named here rather than as sf_output's "no _user output" twenty minutes
+  # into a bring-up: the two lists are in different files, so an environment
+  # added to one and not the other is the likely mistake.
+  [[ -n "$identity" ]] \
+    || fail "no Snowflake service identity is mapped for the $ns Airflow environment — add it to AIRFLOW_SNOWFLAKE_IDENTITY in this file, with a matching service user in terraform/snowflake/identities.tf"
   airflow_user=$(sf_output "${identity}_user")
   airflow_key=$(sf_output "${identity}_private_key")
 
