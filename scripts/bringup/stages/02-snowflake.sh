@@ -20,6 +20,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
+# shellcheck source=scripts/lib/grant_check.sh
+source "$REPO_ROOT/scripts/lib/grant_check.sh"
 
 stage 2 "Snowflake"
 
@@ -37,14 +39,20 @@ env_complete || fail ".env incomplete"
 # a forbidden write proving the boundary is enforced by grants rather than by
 # convention. Add a pair of rows per role as later tickets add them — #115
 # DEVELOPER, #116 CI, #119 TRANSFORMER_STAGING — and nothing else changes.
+#
+# One invariant to preserve when adding rows: **every deny target is also some
+# other identity's allow target.** Snowflake answers "you have no USAGE on this
+# database" and "this schema does not exist" with the same error, so a deny case
+# aimed at a schema that silently stopped existing would pass while asserting
+# nothing. The allow case on the same target is what proves the target is really
+# there — e.g. dropping STEAM_PROD's PUBLIC schema would fail case 3 loudly
+# rather than quietly turning case 2 into a no-op.
 GRANT_CASES=(
   "loader       LOADER           $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA allow"
   "loader       LOADER           $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
   "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_PROD_DATABASE.PUBLIC                  allow"
   "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
 )
-
-PROBE_TABLE="GRANT_CHECK_PROBE"
 
 nstep 1 "applying terraform/snowflake..."
 run_step "tofu init (snowflake)" tf_snowflake init -input=false
@@ -74,45 +82,12 @@ schema_rows=$(sf_query "SHOW SCHEMAS LIKE '$SNOWFLAKE_SOURCE_SCHEMA' IN DATABASE
 ok "${SNOWFLAKE_PROJECT_DATABASES[*]} present, $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA present"
 
 nstep 3 "checking grant isolation as each pipeline identity..."
-# The private keys only exist as sensitive tofu outputs; snowflake_query.py
-# reads a file, so each identity's key is written to one, mode 600, in a
-# directory removed on exit however this stage ends.
-KEY_DIR=$(mktemp -d)
-trap 'rm -rf "$KEY_DIR"' EXIT
+trap grant_check_cleanup EXIT
+grant_isolation_check "${GRANT_CASES[@]}"
 
-probe_as() {
-  local identity="$1" role="$2" sql="$3"
-  local key="$KEY_DIR/$identity.p8"
-  if [[ ! -f "$key" ]]; then
-    (umask 077; sf_output "${identity}_private_key" >"$key")
-  fi
-  SNOWFLAKE_USER="$(sf_output "${identity}_user")" \
-    SNOWFLAKE_PRIVATE_KEY_PATH="$key" \
-    sf_query "$sql" --role "$role" 2>&1
-}
-
-for grant_case in "${GRANT_CASES[@]}"; do
-  read -r identity role target expect <<<"$grant_case"
-  # A typo'd or missing expectation would otherwise read as "deny" and pass
-  # silently, which is the one failure mode a check like this must not have.
-  case "$expect" in
-    allow | deny) ;;
-    *) fail "grant case '$grant_case' has an unknown expectation '$expect' — use allow or deny" ;;
-  esac
-  # CREATE OR REPLACE so a probe table left behind by an interrupted run
-  # can't be mistaken for a missing privilege. DDL needs no running warehouse.
-  if output=$(probe_as "$identity" "$role" "CREATE OR REPLACE TABLE $target.$PROBE_TABLE (probe int)"); then
-    [[ "$expect" == allow ]] \
-      || fail "$role wrote $target — that write must be denied; check terraform/snowflake/identities.tf"
-    probe_as "$identity" "$role" "DROP TABLE $target.$PROBE_TABLE" >/dev/null \
-      || fail "$role created $target.$PROBE_TABLE but could not drop it again"
-    nbullet "$role may write $target"
-  else
-    if [[ "$expect" == allow ]]; then
-      warn "$output"
-      fail "$role could not write $target — that write must succeed; check terraform/snowflake/identities.tf, or the service user's key pair if the error above is an authentication failure"
-    fi
-    nbullet "$role is denied $target"
-  fi
-done
-ok "${#GRANT_CASES[@]} grant cases hold"
+nstep 4 "checking the raw handoff: LOADER writes it, TRANSFORMER_PROD reads it..."
+# A read *denial* is not probed: LOADER has no USAGE on STEAM_PROD at all,
+# which its write-deny case above already proves, and a read probe would fail
+# for the same reason without telling us anything new.
+grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD \
+  "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA"

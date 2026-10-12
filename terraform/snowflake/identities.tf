@@ -15,6 +15,17 @@
 # Reads use *both* an `all` and a `future` grant: `all` covers what exists at
 # apply time, `future` covers the schemas and tables the sink and dbt create
 # afterwards. Neither alone is enough.
+#
+# The `all`-schemas grants carry an explicit depends_on for the landing schema.
+# Without it they are siblings of snowflake_schema.source_system in the graph,
+# all depending only on the database, so tofu may run them concurrently — and
+# `GRANT ... ON ALL SCHEMAS` is evaluated once, at execution time, while a
+# future grant only applies to schemas created after it. The interleaving
+# "all-grant runs → schema is created → future-grant runs" leaves STEAM_RDS
+# with neither, and the provider does no drift detection on `all`-grants, so a
+# second apply would not heal it. Ordering the schema first makes `all` always
+# cover it; the future grants need no edge, since a schema created before them
+# is covered by `all` and one created after is covered by them.
 
 locals {
   # The account's only warehouse.
@@ -70,6 +81,16 @@ resource "snowflake_grant_privileges_to_account_role" "warehouse" {
 # The sink creates each landing table on that topic's first record and then
 # evolves its columns, which it can do because it owns them. It needs USAGE on
 # the database and schema and CREATE TABLE on the schema to get started.
+#
+# CREATE PIPE as well, because this is the Snowpipe Streaming *v2*
+# (high-performance) client — k8s/kafka/connect/kafka-connect.yaml names it,
+# and that architecture provisions a pipe per table. docs/debezium-postgres-config.md
+# records the bootstrap signature: the shared client calls `get_pipe_info` for
+# every topic2table-mapped table before its own auto-create runs, and fails the
+# task with `ERR_TABLE_DOES_NOT_EXIST_NOT_AUTHORIZED`. Under the old
+# ACCOUNTADMIN the NOT_AUTHORIZED half of that was unreachable, so the previous
+# setup proves nothing about the minimal grant set. Without this the sink would
+# fail in Stage 5, twenty minutes of EKS build after a Stage 2 that passed.
 
 resource "snowflake_grant_privileges_to_account_role" "loader_raw_database" {
   account_role_name = snowflake_account_role.loader.name
@@ -83,7 +104,8 @@ resource "snowflake_grant_privileges_to_account_role" "loader_raw_database" {
 
 resource "snowflake_grant_privileges_to_account_role" "loader_raw_schemas" {
   account_role_name = snowflake_account_role.loader.name
-  privileges        = ["USAGE", "CREATE TABLE"]
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE PIPE"]
+  depends_on        = [snowflake_schema.source_system]
 
   on_schema {
     all_schemas_in_database = snowflake_database.raw.name
@@ -92,7 +114,7 @@ resource "snowflake_grant_privileges_to_account_role" "loader_raw_schemas" {
 
 resource "snowflake_grant_privileges_to_account_role" "loader_raw_future_schemas" {
   account_role_name = snowflake_account_role.loader.name
-  privileges        = ["USAGE", "CREATE TABLE"]
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE PIPE"]
 
   on_schema {
     future_schemas_in_database = snowflake_database.raw.name
@@ -116,6 +138,7 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_database" {
 resource "snowflake_grant_privileges_to_account_role" "prod_raw_schemas" {
   account_role_name = snowflake_account_role.transformer_prod.name
   privileges        = ["USAGE"]
+  depends_on        = [snowflake_schema.source_system]
 
   on_schema {
     all_schemas_in_database = snowflake_database.raw.name

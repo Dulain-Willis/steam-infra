@@ -112,13 +112,25 @@ LOADER_KEY=$(sf_output loader_private_key)
 PROD_USER=$(sf_output prod_airflow_user)
 PROD_KEY=$(sf_output prod_airflow_private_key)
 
+# Asserted rather than assumed: `private_key_pem_pkcs8` is what the module
+# outputs, but `private_key_pem` is PKCS#1 and one character away in the .tf —
+# and it would read fine here, then fail in dbt at DAG-run time.
+grep -q '^-----BEGIN PRIVATE KEY-----' <<<"$PROD_KEY" \
+  || fail "prod_airflow_private_key is not PKCS#8 PEM — dbt-snowflake rejects PKCS#1 ('BEGIN RSA PRIVATE KEY') and headerless keys; check terraform/snowflake/outputs.tf uses private_key_pem_pkcs8"
+LOADER_KEY_STRIPPED=$(grep -v '^-----' <<<"$LOADER_KEY" | tr -d '\n')
+[[ -n "$LOADER_KEY_STRIPPED" && "$LOADER_KEY_STRIPPED" != *-----* ]] \
+  || fail "the loader key did not reduce to a header-free single line — the Kafka sink accepts no other form"
+
+# The two namespaces' secrets share a name but deliberately *not* a key, so a
+# consumer wired to the wrong one fails to find it instead of silently reading
+# an encoding it cannot parse.
 kubectl create secret generic snowflake-keypair -n kafka \
-  --from-literal=private_key="$(grep -v '^-----' <<<"$LOADER_KEY" | tr -d '\n')" \
+  --from-literal=private_key="$LOADER_KEY_STRIPPED" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl create secret generic snowflake-keypair -n airflow \
-  --from-literal=private_key="$PROD_KEY" \
+  --from-literal=private_key_pkcs8="$PROD_KEY" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-ok "snowflake-keypair (kafka: $LOADER_USER stripped, airflow: $PROD_USER PKCS#8 PEM)"
+ok "snowflake-keypair (kafka: $LOADER_USER, private_key stripped; airflow: $PROD_USER, private_key_pkcs8 PEM)"
 
 kubectl create secret generic snowflake-account -n kafka \
   --from-literal=account="$SNOWFLAKE_ACCOUNT" --from-literal=user="$LOADER_USER" \

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Bring-up's grant-isolation seam (#114): proves each pipeline identity can
+# write exactly where it should and nowhere else, by authenticating as that
+# identity with its own tofu-generated key rather than as the operator with
+# `--role`. Sourced by scripts/bringup/stages/02-snowflake.sh — never run
+# directly. The cases live in that stage, next to the databases they name.
+#
+# Depends on lib/output.sh (fail/warn/ok/nbullet) and lib/env.sh (sf_query,
+# sf_output) already being sourced.
+#
+# Authenticating as the service users, rather than `sf_query --role LOADER` as
+# the operator, needs no extra grant (that would require granting pipeline
+# roles to a human) and proves more: that the generated key pair actually
+# authenticates, which is the other half of "this identity works".
+#
+# lib/grant_check_test.sh exercises every branch below with sf_query and
+# sf_output stubbed, including the cases a live run cannot reach — a broken
+# boundary, and an unreadable key. Run it after changing anything here.
+
+# Table each probe creates and drops. One name, reused: CREATE OR REPLACE
+# means a table left behind by an interrupted run can't be mistaken for a
+# missing privilege.
+GRANT_PROBE_TABLE="GRANT_CHECK_PROBE"
+
+_GRANT_KEY_DIR=""
+declare -A _GRANT_USER
+
+# _grant_check_init IDENTITY... — fetch each identity's service-user name and
+# private key once, up front, in the *calling* shell.
+#
+# Deliberately not done lazily inside grant_probe: that runs inside a command
+# substitution, where `fail` exits only the subshell. The redirect would have
+# already created an empty key file, snowflake_query.py would die reading it,
+# and a `deny` case would record that as "denied" — a pass asserting nothing.
+_grant_check_init() {
+  local identity
+  _GRANT_KEY_DIR=$(mktemp -d)
+  # mktemp -d is mode 0700, so the keys inside need no further protection.
+  for identity in "$@"; do
+    sf_output "${identity}_private_key" >"$_GRANT_KEY_DIR/$identity.p8" \
+      || fail "could not read ${identity}_private_key from terraform/snowflake"
+    [[ -s "$_GRANT_KEY_DIR/$identity.p8" ]] \
+      || fail "${identity}_private_key from terraform/snowflake is empty"
+    _GRANT_USER[$identity]=$(sf_output "${identity}_user") \
+      || fail "could not read ${identity}_user from terraform/snowflake"
+  done
+}
+
+# grant_check_cleanup — safe as an EXIT trap, always returns 0.
+grant_check_cleanup() {
+  [[ -n "$_GRANT_KEY_DIR" ]] && rm -rf "$_GRANT_KEY_DIR"
+  return 0
+}
+
+# grant_probe IDENTITY ROLE SQL — run one statement as that identity and role.
+# Prints Snowflake's output (stderr folded in) and exits non-zero if the
+# statement was refused. That exit code is the whole assertion.
+grant_probe() {
+  local identity="$1" role="$2" sql="$3"
+  SNOWFLAKE_USER="${_GRANT_USER[$identity]}" \
+    SNOWFLAKE_PRIVATE_KEY_PATH="$_GRANT_KEY_DIR/$identity.p8" \
+    sf_query "$sql" --role "$role" 2>&1
+}
+
+# grant_isolation_check CASE... — each CASE is "IDENTITY ROLE TARGET EXPECT",
+# where EXPECT is `allow` (the write must succeed) or `deny` (Snowflake must
+# refuse it). See the stage for what the rows mean and the invariant to keep.
+grant_isolation_check() {
+  local cases=("$@") grant_case identity role target expect output
+  local identities=()
+
+  mapfile -t identities < <(printf '%s\n' "${cases[@]}" | awk '{print $1}' | sort -u)
+  _grant_check_init "${identities[@]}"
+
+  for grant_case in "${cases[@]}"; do
+    read -r identity role target expect <<<"$grant_case"
+    # A typo'd or missing expectation would otherwise read as "deny" and pass
+    # silently, which is the one failure mode a check like this must not have.
+    case "$expect" in
+      allow | deny) ;;
+      *) fail "grant case '$grant_case' has an unknown expectation '$expect' — use allow or deny" ;;
+    esac
+
+    if output=$(grant_probe "$identity" "$role" \
+      "CREATE OR REPLACE TABLE $target.$GRANT_PROBE_TABLE (probe int)"); then
+      # Drop before deciding, so a boundary violation doesn't also leave the
+      # probe table behind: it would be owned by the wrong role, and the next
+      # bring-up's CREATE OR REPLACE from the rightful writer would need an
+      # OWNERSHIP it hasn't got — failing its *allow* case with a misleading
+      # "that write must succeed".
+      grant_probe "$identity" "$role" "DROP TABLE IF EXISTS $target.$GRANT_PROBE_TABLE" >/dev/null \
+        || fail "$role created $target.$GRANT_PROBE_TABLE but could not drop it again"
+      [[ "$expect" == allow ]] \
+        || fail "$role wrote $target — that write must be denied; check terraform/snowflake/identities.tf"
+      nbullet "$role may write $target"
+    else
+      if [[ "$expect" == allow ]]; then
+        warn "$output"
+        fail "$role could not write $target — that write must succeed; check terraform/snowflake/identities.tf, or the service user's key pair if the error above is an authentication failure"
+      fi
+      nbullet "$role is denied $target"
+    fi
+  done
+  ok "${#cases[@]} grant cases hold"
+}
+
+# grant_handoff_check WRITER_IDENTITY WRITER_ROLE READER_IDENTITY READER_ROLE TARGET
+#
+# The writer creates a table in TARGET and the reader must be able to SELECT
+# it. This is the grant the raw/prod split exists for and the one the case
+# table above cannot express, since that only probes writes. Worth its own
+# step for two reasons:
+#
+#  - the probe table is created *after* the grants were applied, so this
+#    exercises the future-tables grant specifically. An all-only grant matrix
+#    passes `tofu validate` and then fails here rather than in Stage 6, after
+#    the whole AWS build.
+#  - it is the cheapest check that catches a schema which ended up with no
+#    grants at all — see the ordering note in terraform/snowflake/identities.tf.
+grant_handoff_check() {
+  local writer="$1" writer_role="$2" reader="$3" reader_role="$4" target="$5"
+  local table="$target.$GRANT_PROBE_TABLE" output
+  local drop="DROP TABLE IF EXISTS $table"
+
+  if ! output=$(grant_probe "$writer" "$writer_role" "CREATE OR REPLACE TABLE $table (probe int)"); then
+    warn "$output"
+    fail "$writer_role could not create $table — check its grants in terraform/snowflake/identities.tf"
+  fi
+  if ! output=$(grant_probe "$reader" "$reader_role" "SELECT probe FROM $table"); then
+    warn "$output"
+    grant_probe "$writer" "$writer_role" "$drop" >/dev/null || true
+    fail "$reader_role could not read $table — prod dbt reads the raw database through this grant; check the read grants in terraform/snowflake/identities.tf"
+  fi
+  grant_probe "$writer" "$writer_role" "$drop" >/dev/null \
+    || fail "could not drop $table after the handoff check"
+  ok "$writer_role writes $target and $reader_role reads it"
+}

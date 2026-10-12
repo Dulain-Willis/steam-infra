@@ -43,15 +43,17 @@ extraEnv: |
   # rotated on every bring-up. dbt's prod target reads it as content rather
   # than a path, and dbt-snowflake only accepts PKCS#8 PEM with its header
   # and newlines intact — so this namespace's snowflake-keypair holds that
-  # full form. The `kafka` namespace has a secret of the same name holding
-  # the *loader's* key header-stripped on one line, which is what the Kafka
-  # sink wants instead; the two are built separately in
+  # full form, under a key named for it. The `kafka` namespace has a secret of
+  # the same name whose `private_key` holds the *loader's* key header-stripped
+  # on one line, which is what the Kafka sink wants instead; the distinct key
+  # names mean a reference pointed at the wrong one fails to resolve rather
+  # than quietly handing dbt an encoding it cannot parse. Both are built in
   # bringup/stages/05-cluster.sh.
   - name: SNOWFLAKE_PRIVATE_KEY
     valueFrom:
       secretKeyRef:
         name: snowflake-keypair
-        key: private_key
+        key: private_key_pkcs8
 
   # Served under /airflow on the shared internal ALB (#107) — tells the
   # API server (Airflow 3's renamed webserver) to generate links/redirects

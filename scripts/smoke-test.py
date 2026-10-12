@@ -138,6 +138,15 @@ def poll_for_row(expected, deadline):
                     # itself, on a pipeline that's otherwise healthy. Keep
                     # polling — a real schema problem will still fail every
                     # attempt up to the deadline.
+                    #
+                    # Note errno 2003 is also what a *missing grant* returns:
+                    # since #114 this runs as TRANSFORMER_PROD with SELECT
+                    # only, not as ACCOUNTADMIN, so "not authorized" is now
+                    # reachable and Snowflake words it identically to "not
+                    # created yet". It cannot be told apart here, so the
+                    # failure message below names grants as the first thing to
+                    # check and points at the bring-up step that does
+                    # distinguish them.
                     if exc.errno in (
                         SNOWFLAKE_ERRNO_INVALID_IDENTIFIER,
                         SNOWFLAKE_ERRNO_DOES_NOT_EXIST,
@@ -184,9 +193,18 @@ def main():
     print(
         f"FAIL: row {row_id} did not appear in Snowflake within "
         f"{TIMEOUT_SECONDS:.0f}s. Check, in order: "
+        f"{SNOWFLAKE_ROLE}'s grants on "
+        f"{SNOWFLAKE_DATABASE}.{SNOWFLAKE_SCHEMA} (see below), "
         "connector/task health (bringup/stages/05-cluster.sh's verify step), "
         "RDS logical replication (bringup/stages/04-database.sh's verify step), "
-        "then Snowflake ingestion latency/errors.",
+        "then Snowflake ingestion latency/errors.\n"
+        "Grants are listed first because Snowflake answers a missing USAGE or "
+        "SELECT with the same errno 2003 ('does not exist, or operation "
+        "cannot be performed') as a table the sink genuinely has not created "
+        "yet. The two are indistinguishable from here, so the poll above "
+        "retries both until the deadline and they fail identically. What "
+        "separates them is bringup/stages/02-snowflake.sh's handoff check: if "
+        "that passed, the grants are sound and the pipeline is the problem.",
         file=sys.stderr,
     )
     return 1
