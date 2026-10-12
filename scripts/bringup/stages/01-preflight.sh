@@ -3,7 +3,7 @@
 # credentials, or an incomplete .env — before any bring-up work starts.
 # Then detects leftovers from a previous session (either tofu state holding
 # resources beyond the tfstate bucket, or the Snowflake root module's state
-# holding anything, or the Snowflake database existing outside that state)
+# holding anything, or a project Snowflake database existing outside that state)
 # and runs a full teardown first, so every normal bring-up starts from a
 # clean slate.
 set -euo pipefail
@@ -38,17 +38,15 @@ run_step "tofu init" tf init -input=false
 run_step "tofu init (snowflake)" tf_snowflake init -input=false
 tf_leftover_resources=$(tf_leftovers)
 sf_leftover_resources=$(sf_leftovers)
-snowflake_db_exists=false
-if snowflake_database_exists; then
-  snowflake_db_exists=true
-fi
+snowflake_databases=$(snowflake_databases_present) \
+  || fail "could not query Snowflake for the project databases — see the error above"
 
-if [[ -z "$tf_leftover_resources" && -z "$sf_leftover_resources" && "$snowflake_db_exists" == false ]]; then
+if [[ -z "$tf_leftover_resources" && -z "$sf_leftover_resources" && -z "$snowflake_databases" ]]; then
   ok "no leftovers — starting from nothing"
 else
   [[ -n "$tf_leftover_resources" ]] && warn "tofu state holds resources beyond the tfstate bucket"
   [[ -n "$sf_leftover_resources" ]] && warn "the Snowflake module's state holds resources"
-  [[ "$snowflake_db_exists" == true ]] && warn "$SNOWFLAKE_DATABASE already exists in Snowflake"
+  [[ -n "$snowflake_databases" ]] && warn "already exist(s) in Snowflake: $snowflake_databases"
   nsub "running teardown first..."
   bash "$REPO_ROOT/scripts/teardown/teardown.sh"
   ok "leftovers cleared"

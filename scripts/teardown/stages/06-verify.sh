@@ -60,16 +60,39 @@ else
   problems+=("load balancers: ${albs} ${clbs}")
 fi
 
-nstep 6 "Snowflake database $SNOWFLAKE_DATABASE..."
+# Asks Snowflake, not tofu state — so anything left behind outside the module
+# (an older session, a hand-rolled CREATE) still counts as a problem. Databases
+# bill for storage; roles and service users don't, but a service user whose key
+# pair is gone with the session's state is a credential nobody can account for,
+# so "$0" here means "no project objects", not just "no storage".
 env_complete || fail ".env incomplete"
-# Asks Snowflake, not tofu state — so a database left behind outside the
-# module (an older session, a hand-rolled CREATE) still counts as a problem.
-if snowflake_database_exists; then
-  warn "$SNOWFLAKE_DATABASE still exists"
-  problems+=("Snowflake database: $SNOWFLAKE_DATABASE")
-else
-  ok "absent"
-fi
+
+# Each query's status is checked separately from its output, because a failed
+# query must not read as "nothing left" — that is how a $0 report would get
+# made over a live account nobody could reach.
+nstep 6 "Snowflake project databases..."
+databases=$(snowflake_databases_present) \
+  || fail "could not query Snowflake for the project databases — see the error above"
+check_empty "Snowflake databases" "$databases"
+
+nstep 7 "Snowflake project roles..."
+# Listed by exact name rather than matched by pattern: LOADER and
+# TRANSFORMER_PROD share no prefix. The list lives in lib/env.sh.
+remaining_roles=""
+for role in "${SNOWFLAKE_PROJECT_ROLES[@]}"; do
+  rows=$(sf_query "SHOW ROLES LIKE '$role'") \
+    || fail "could not query Snowflake for role $role — see the error above"
+  [[ -z "$rows" ]] || remaining_roles+="${remaining_roles:+ }$role"
+done
+check_empty "Snowflake roles" "$remaining_roles"
+
+nstep 8 "Snowflake project service users..."
+# SHOW USERS leads with the user's name (SHOW DATABASES and SHOW ROLES lead
+# with created_on) — verified against the account. The pattern deliberately
+# does not match the operator's own user, which is not ours to remove.
+rows=$(sf_query "SHOW USERS LIKE '$SNOWFLAKE_PROJECT_USER_PATTERN'") \
+  || fail "could not query Snowflake for the project service users — see the error above"
+check_empty "Snowflake service users" "$(cut -f1 <<<"$rows" | paste -sd' ' -)"
 
 if (( ${#problems[@]} )); then
   fail "\$0 verification failed: ${#problems[@]} problem(s) — see above"

@@ -20,9 +20,11 @@ RECORD_CONTENT JSON blob — this queries those columns directly. See
 docs/debezium-postgres-config.md.
 
 Run through the same SSM tunnel bringup/stages/04-database.sh opens
-(DB_HOST defaults to localhost:15432); Snowflake auth reuses the RSA key
-pair registered for the sink connector — SNOWFLAKE_KEY_FILE, default
-.secrets/snowflake_key.p8.
+(DB_HOST defaults to localhost:15432). Every SNOWFLAKE_* value is required
+from the environment, with no default — bringup/stages/06-generator.sh points
+it at the raw database and its source-system schema, as the prod Airflow
+service user with TRANSFORMER_PROD, and writes that user's key to the file
+SNOWFLAKE_KEY_FILE names.
 """
 
 import os
@@ -38,13 +40,16 @@ DB_PORT = os.environ.get("DB_PORT", "15432")
 DB_NAME = os.environ.get("DB_NAME", "steam")
 DB_USER = os.environ.get("DB_USER", "steam_proj_admin")
 
-SNOWFLAKE_ACCOUNT = os.environ.get("SNOWFLAKE_ACCOUNT", "FMBSGSW-YU41950")
-SNOWFLAKE_USER = os.environ.get("SNOWFLAKE_USER", "DULAIN")
-SNOWFLAKE_DATABASE = os.environ.get("SNOWFLAKE_DATABASE", "STEAM_PROJECT")
-SNOWFLAKE_SCHEMA = os.environ.get("SNOWFLAKE_SCHEMA", "PUBLIC")
-SNOWFLAKE_ROLE = os.environ.get("SNOWFLAKE_ROLE", "ACCOUNTADMIN")
-SNOWFLAKE_WAREHOUSE = os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
-SNOWFLAKE_KEY_FILE = os.environ.get("SNOWFLAKE_KEY_FILE", ".secrets/snowflake_key.p8")
+# No defaults: these name a live account, identity and database, and a
+# half-updated set of exports with defaults filling the gaps would query the
+# wrong live database and pass. Missing one is a KeyError before any write.
+SNOWFLAKE_ACCOUNT = os.environ["SNOWFLAKE_ACCOUNT"]
+SNOWFLAKE_USER = os.environ["SNOWFLAKE_USER"]
+SNOWFLAKE_DATABASE = os.environ["SNOWFLAKE_DATABASE"]
+SNOWFLAKE_SCHEMA = os.environ["SNOWFLAKE_SCHEMA"]
+SNOWFLAKE_ROLE = os.environ["SNOWFLAKE_ROLE"]
+SNOWFLAKE_WAREHOUSE = os.environ["SNOWFLAKE_WAREHOUSE"]
+SNOWFLAKE_KEY_FILE = os.environ["SNOWFLAKE_KEY_FILE"]
 
 TIMEOUT_SECONDS = float(os.environ.get("SMOKE_TEST_TIMEOUT_SECONDS", "180"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("SMOKE_TEST_POLL_INTERVAL_SECONDS", "5"))

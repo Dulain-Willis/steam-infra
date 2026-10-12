@@ -129,7 +129,7 @@ Snowflake sink's Snowpipe Streaming channel offset tokens live in
 Snowflake, not Kafka, and don't reset with the source — so the sink will
 silently skip the re-snapshotted rows (`PartitionOffsetTracker: skipping
 current record - expected offset X but received Y`) unless you also drop
-the 16 `STEAM_PROJECT.PUBLIC.*` landing tables or redeploy `snowflake-sink`
+the 16 `STEAM_RAW.STEAM_RDS.*` landing tables or redeploy `snowflake-sink`
 under a new connector name. See the `snowflake-sink-stale-offsets` memory /
 `CONTEXT.md` for the full mechanism. Not handled as part of this fix (out
 of scope, tracked separately) — the tables currently still reflect

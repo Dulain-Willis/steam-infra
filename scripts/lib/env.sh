@@ -25,20 +25,45 @@ fi
 export SNOWFLAKE_PRIVATE_KEY_PATH
 
 # Fixed values (#84 Implementation Decisions: not meant to be configurable
-# per repo copy — AWS region, Snowflake database/role/warehouse/schema).
+# per repo copy — AWS region, Snowflake database/warehouse/schema names).
+#
+# There is no single SNOWFLAKE_DATABASE/SCHEMA/ROLE triple any more (#114):
+# the raw database and prod database are written by different identities, so
+# "which database, as which role" is a property of the caller, not of the
+# session. Each consumer names the one it wants, and nothing defaults to
+# ACCOUNTADMIN — the only caller that still uses it is tofu's own bootstrap
+# provider (terraform/snowflake/versions.tf) and the read-only inventory
+# queries in lib/snowflake_query.py.
 AWS_REGION="${AWS_REGION:-us-east-1}"
 EKS_CLUSTER_NAME="steam-infra"
 RDS_INSTANCE_ID="steam-infra"
 DB_NAME="steam"
 DB_USER="steam_proj_admin"
 REPLICATION_SLOT_NAME="debezium_steam"
-SNOWFLAKE_DATABASE="STEAM_PROJECT"
-SNOWFLAKE_SCHEMA="PUBLIC"
-SNOWFLAKE_ROLE="ACCOUNTADMIN"
+SNOWFLAKE_RAW_DATABASE="STEAM_RAW"
+SNOWFLAKE_PROD_DATABASE="STEAM_PROD"
+# The schema in STEAM_RAW the Kafka sink lands tables in, named after the
+# source system (the `steam` RDS Postgres database Debezium captures) rather
+# than PUBLIC. dbt's sources read the same pair.
+SNOWFLAKE_SOURCE_SCHEMA="STEAM_RDS"
 SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
 export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
-  REPLICATION_SLOT_NAME SNOWFLAKE_DATABASE SNOWFLAKE_SCHEMA SNOWFLAKE_ROLE \
-  SNOWFLAKE_WAREHOUSE
+  REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_PROD_DATABASE \
+  SNOWFLAKE_SOURCE_SCHEMA SNOWFLAKE_WAREHOUSE
+
+# Every Snowflake object terraform/snowflake owns, by name. Bring-up's
+# leftover detection, its verify step and teardown's $0 inventory all walk
+# these, so "did we leave anything behind" can't drift from "what do we
+# create". Add to them when a ticket adds an object: #115 STEAM_DEV +
+# DEVELOPER, #116 CI, #119 STEAM_STAGING + TRANSFORMER_STAGING.
+SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE")
+# Roles have no shared prefix, so they are listed by exact name. Service users
+# all match STEAM\_%, so they are matched by pattern instead (`_` is a
+# single-character wildcard in SQL LIKE, hence the escape).
+# shellcheck disable=SC2034  # read by stage scripts that source this file
+SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_PROD)
+# shellcheck disable=SC2034  # read by stage scripts that source this file
+SNOWFLAKE_PROJECT_USER_PATTERN='STEAM\_%'
 
 tf() { tofu -chdir="$TF_DIR" "$@"; }
 
@@ -60,7 +85,7 @@ export TF_VAR_private_key_path="${SNOWFLAKE_PRIVATE_KEY_PATH:-}"
 # in the scripts; creating and dropping is terraform/snowflake's job.
 sf_query() { uv run "$REPO_ROOT/scripts/lib/snowflake_query.py" "$@"; }
 
-# snowflake_database_exists [NAME] — asks Snowflake, rather than trusting a
+# snowflake_database_exists NAME — asks Snowflake, rather than trusting a
 # tofu apply or destroy. Used by bring-up's and teardown's verify steps.
 #
 # A failed query is NOT "absent": an expired key or an unreachable account
@@ -68,12 +93,29 @@ sf_query() { uv run "$REPO_ROOT/scripts/lib/snowflake_query.py" "$@"; }
 # the query's status is checked separately from its output, and a failure is
 # fatal (fail exits, even from inside an `if` condition).
 snowflake_database_exists() {
-  local name="${1:-$SNOWFLAKE_DATABASE}" out
+  local name="$1" out
   # '' is how a single quote is escaped inside a Snowflake string literal.
   if ! out=$(sf_query "SHOW DATABASES LIKE '${name//\'/\'\'}'"); then
     fail "could not query Snowflake for database $name — see the error above"
   fi
   [[ -n "$out" ]]
+}
+
+# snowflake_databases_present — prints the project databases that exist right
+# now, space-separated on one line (empty if none). "Is any of ours there"
+# (leftover detection, the orphan guards) and "are they all gone" (teardown)
+# both ask through this, so the two can't disagree.
+#
+# Call it as `present=$(snowflake_databases_present) || fail ...`: a query
+# failure is fatal, but snowflake_database_exists' `fail` only exits the
+# command substitution's own subshell, so the caller has to check the status
+# or a dead connection reads as "nothing there".
+snowflake_databases_present() {
+  local name found=""
+  for name in "${SNOWFLAKE_PROJECT_DATABASES[@]}"; do
+    snowflake_database_exists "$name" && found+="${found:+ }$name"
+  done
+  printf '%s' "$found"
 }
 
 # Resources that survive a full teardown (the tfstate bucket has
