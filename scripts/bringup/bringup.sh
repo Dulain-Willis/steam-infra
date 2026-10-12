@@ -2,7 +2,7 @@
 # Bring-up entrypoint: sequences the numbered stages in bringup/stages/.
 # Each stage is its own executable script (sources lib/ itself) so it can
 # also be run standalone, e.g.:
-#   bringup/stages/02-aws.sh
+#   bringup/stages/03-aws.sh
 #
 # Flags:
 #   --start-from N   skip stages before N (resuming after a partial run).

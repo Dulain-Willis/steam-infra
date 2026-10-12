@@ -21,7 +21,7 @@ session. Flags:
 - `--stop-after N` — stop after stage N, to test a partial bring-up.
 
 Each stage script in `bringup/stages/` is also runnable on its own, e.g.
-`bringup/stages/02-aws.sh`, to debug one stage in isolation. Noisy tool
+`bringup/stages/03-aws.sh`, to debug one stage in isolation. Noisy tool
 output (tofu, kubectl, helm) is logged under `/tmp`; a failing step prints
 the tail of its log.
 
@@ -49,8 +49,20 @@ Same `--start-from`/`--stop-after` flags; same per-stage scripts in
    ALTER USER <user> SET RSA_PUBLIC_KEY='<contents of .pub, header/footer/newlines stripped>';
    ```
 3. Copy `.env.example` to `.env` and fill in `SNOWFLAKE_ACCOUNT`,
+   `SNOWFLAKE_ORGANIZATION_NAME`, `SNOWFLAKE_ACCOUNT_NAME`,
    `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY_PATH` (defaults to the key
    above), and `AIRFLOW_ALERT_EMAIL`.
+
+   The account identifier is needed in both forms: the OpenTofu provider
+   wants it split (`organization_name` + `account_name`), while the Python
+   connector, the Kafka sink and dbt want the combined `<ORG>-<ACCOUNT>`.
+   Get the two halves from a worksheet:
+   ```sql
+   SELECT CURRENT_ORGANIZATION_NAME(), CURRENT_ACCOUNT_NAME();
+   ```
+   `CURRENT_ACCOUNT()` is *not* it — that returns the account locator, which
+   does not resolve as part of an account identifier. Preflight fails if
+   `SNOWFLAKE_ACCOUNT` isn't `<ORG>-<ACCOUNT>`, so the two can't drift.
 4. Install [`uv`](https://docs.astral.sh/uv/) — the only Python
    prerequisite; every Python script here runs through it, so the host's
    system Python is never touched. `tofu`, `aws`, `kubectl`, `helm`, `jq`,
@@ -72,8 +84,9 @@ Account-specific values that can't come from `.env` or `tofu output`:
 - The ArgoCD repo URL — `repoURL` in `argocd/root.yaml` and every
   `argocd/apps/*.yaml`.
 - The ECR image URL — `image` in `k8s/kafka/connect/kafka-connect.yaml`.
-- The tfstate bucket — `bucket` in `terraform/backend.tf` (and the matching
-  `aws_s3_bucket.tfstate` name in `terraform/tfstate_backend.tf`).
+- The tfstate bucket — `bucket` in `terraform/backend.tf` and
+  `terraform/snowflake/backend.tf` (and the matching `aws_s3_bucket.tfstate`
+  name in `terraform/tfstate_backend.tf`).
 - The RDS hostname — `database.hostname` in
   `k8s/kafka/connectors/debezium-connector.yaml` (get it with
   `cd terraform && tofu output -raw rds_endpoint`).
@@ -81,10 +94,15 @@ Account-specific values that can't come from `.env` or `tofu output`:
 ## Layout
 
 - `bringup/`, `teardown/` — entrypoint scripts and their numbered stages.
-- `lib/` — shared library: terminal output helpers, `.env`/tofu wrapper,
-  the SSM tunnel, and the Snowflake database helper, used by both flows.
+- `lib/` — shared library: terminal output helpers, `.env`/tofu wrappers,
+  the SSM tunnel, and the Snowflake query helper used by both flows' verify
+  steps.
 - `terraform/` — AWS infrastructure (network, EKS, RDS, ECR, bastion,
   tfstate backend). Everything below the AWS/EKS layer is ArgoCD's.
+- `terraform/snowflake/` — a second root module, own state key in the same
+  bucket, owning the Snowflake side (the database today; roles, users and
+  grants later). Separate state so a Snowflake change can't block an AWS
+  plan or the other way round.
 - `argocd/`, `k8s/` — the ArgoCD app-of-apps tree and the manifests it
   points at (Strimzi, Kafka, Kafka Connect, the connectors, Airflow).
 - `generator/` — the EC2-hosted event generator that ticks against RDS.

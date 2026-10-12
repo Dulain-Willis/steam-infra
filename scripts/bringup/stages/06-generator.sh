@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stage 5/6: generator + end-to-end smoke test. `tofu apply` including the
-# generator (held back from Stage 2 until the database is seeded) -> verify
+# Stage 6: generator + end-to-end smoke test. `tofu apply` including the
+# generator (held back from Stage 3 until the database is seeded) -> verify
 # the instance is running and RDS row counts actually grow -> run the
 # RDS -> Debezium -> Kafka -> Snowflake smoke test. No dbt/Airflow DAG
 # trigger (#84 Out of Scope).
@@ -15,7 +15,7 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 trap tunnel_cleanup EXIT
 
-stage 5 6 "Generator"
+stage 6 "Generator"
 
 # Event tables the generator writes to on a tick (docs/generator-runbook.md's
 # throughput query) - summed as one row-count proxy for "is it ticking".
@@ -72,7 +72,7 @@ BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 RDS_HOST=$(tf output -raw rds_endpoint 2>/dev/null || true)
 DB_PASSWORD=$(tf output -raw db_password 2>/dev/null || true)
 [[ -n "$BASTION_ID" && -n "$RDS_HOST" && -n "$DB_PASSWORD" ]] \
-  || fail "missing bastion/rds outputs — did Stage 2 (AWS) run?"
+  || fail "missing bastion/rds outputs — did Stage 3 (AWS) run?"
 
 nstep 4 "opening SSM tunnel to RDS through the bastion..."
 open_rds_tunnel "$BASTION_ID" "$RDS_HOST" || fail "tunnel never came up"

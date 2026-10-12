@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage 4/6: cluster. Point kubectl at EKS -> install ArgoCD via helm at the
+# Stage 5: cluster. Point kubectl at EKS -> install ArgoCD via helm at the
 # chart version pinned in argocd/apps/argocd.yaml (skip if already installed,
 # so ArgoCD adopts its own Helm release cleanly once root syncs that
 # Application) -> create/refresh every hand-made secret (idempotent) -> apply
@@ -17,7 +17,7 @@ source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
 
-stage 4 6 "Cluster"
+stage 5 "Cluster"
 
 # Every Application the root app-of-apps (argocd/apps) is expected to bring
 # up. Kept as one list so "all healthy" and "count matches" can't drift.
@@ -87,7 +87,7 @@ kubectl create namespace airflow --dry-run=client -o yaml | kubectl apply -f - >
 
 DB_USERNAME=$(tf output -raw db_username)
 DB_PASSWORD=$(tf output -raw db_password)
-[[ -n "$DB_USERNAME" && -n "$DB_PASSWORD" ]] || fail "missing db_username/db_password outputs — did Stage 2 (AWS) run?"
+[[ -n "$DB_USERNAME" && -n "$DB_PASSWORD" ]] || fail "missing db_username/db_password outputs — did Stage 3 (AWS) run?"
 kubectl create secret generic rds-credentials -n kafka \
   --from-literal=username="$DB_USERNAME" --from-literal=password="$DB_PASSWORD" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null

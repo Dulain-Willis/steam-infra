@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Stage 6/6: admin ingress. Waits for the AWS Load Balancer Controller
+# Stage 7: admin ingress. Waits for the AWS Load Balancer Controller
 # (#107) to populate the shared ALB's hostname on the Airflow Ingress, then
 # starts the SSM tunnel to it (#108) in the background and prints the
 # clickable Airflow/Argo CD links. Deliberately does not `trap ... EXIT` or
-# close the tunnel before this script exits — unlike Stage 3's RDS tunnel,
+# close the tunnel before this script exits — unlike Stage 4's RDS tunnel,
 # this one is meant to keep running after bring-up finishes; Stage 2 of
 # teardown (#110) is what stops it.
 set -euo pipefail
@@ -16,12 +16,12 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 # shellcheck source=scripts/lib/tunnel.sh
 source "$REPO_ROOT/scripts/lib/tunnel.sh"
 
-stage 6 6 "Admin ingress"
+stage 7 "Admin ingress"
 
 TUNNEL_PID_FILE="$LOG_DIR/admin-alb-tunnel.pid"
 
 BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
-[[ -n "$BASTION_ID" ]] || fail "missing bastion_instance_id output — did Stage 2 (AWS) run?"
+[[ -n "$BASTION_ID" ]] || fail "missing bastion_instance_id output — did Stage 3 (AWS) run?"
 
 nstep 1 "waiting for the ALB hostname to be assigned..."
 ALB_HOST=""

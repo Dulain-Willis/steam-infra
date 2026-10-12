@@ -19,7 +19,7 @@ the top level before the sink lands it, so rows arrive as typed columns
 RECORD_CONTENT JSON blob — this queries those columns directly. See
 docs/debezium-postgres-config.md.
 
-Run through the same SSM tunnel bringup/stages/03-database.sh opens
+Run through the same SSM tunnel bringup/stages/04-database.sh opens
 (DB_HOST defaults to localhost:15432); Snowflake auth reuses the RSA key
 pair registered for the sink connector — SNOWFLAKE_KEY_FILE, default
 .secrets/snowflake_key.p8.
@@ -179,8 +179,8 @@ def main():
     print(
         f"FAIL: row {row_id} did not appear in Snowflake within "
         f"{TIMEOUT_SECONDS:.0f}s. Check, in order: "
-        "connector/task health (bringup/stages/04-cluster.sh's verify step), "
-        "RDS logical replication (bringup/stages/03-database.sh's verify step), "
+        "connector/task health (bringup/stages/05-cluster.sh's verify step), "
+        "RDS logical replication (bringup/stages/04-database.sh's verify step), "
         "then Snowflake ingestion latency/errors.",
         file=sys.stderr,
     )
