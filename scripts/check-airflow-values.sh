@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Static check on the Airflow Helm values split (no cluster needed).
 #
-#   1. every environment's base + overlay + image stack renders
+#   1. every environment's base + overlay + image stack renders, and its
+#      Ingress claims its own path with an explicit rule order
 #   2. the base alone renders and leaks nothing environment-specific
 #
 # (2) is the thing that rots silently: the base/overlay split exists so two
 # environments cannot drift, and a value put in the base by mistake is
-# invisible until both environments inherit the wrong one. Run it after
-# touching anything under k8s/airflow/.
+# invisible until both environments inherit the wrong one.
+#
+# The Ingress half of (1) guards the other direction. `path` and `group.order`
+# are *only* in the overlay now, so an overlay that forgets them renders an
+# Ingress claiming `/` at order 0 on the shared internal ALB -- which would
+# swallow /argocd and every other member's rule rather than failing. Run this
+# after touching anything under k8s/airflow/.
 #
 # Usage: bash scripts/check-airflow-values.sh
 set -euo pipefail
@@ -38,10 +44,22 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
   env_name=$(basename "$overlay" .yaml); env_name=${env_name#values-}
   image="$VALUES_DIR/values-image-$env_name.yaml"
   [[ -f $image ]] || { echo "FAIL: $env_name has no values-image-$env_name.yaml"; status=1; continue; }
-  if render -f "$VALUES_DIR/values.yaml" -f "$overlay" -f "$image" >/dev/null; then
-    echo "ok    $env_name renders (values.yaml + $(basename "$overlay") + $(basename "$image"))"
+  if ! rendered=$(render -f "$VALUES_DIR/values.yaml" -f "$overlay" -f "$image"); then
+    echo "FAIL  $env_name does not render"; status=1; continue
+  fi
+  echo "ok    $env_name renders (values.yaml + $(basename "$overlay") + $(basename "$image"))"
+
+  ingress=$(awk '/^kind: Ingress$/,/^---$/' <<<"$rendered")
+  # `|| true` on both: a missing annotation is the thing being checked, not a
+  # reason to abort under `set -e` with nothing printed.
+  path=$(grep -oE 'path: /\S*' <<<"$ingress" | head -1 || true)
+  order=$(grep -oE 'group\.order: "?-?[0-9]+"?' <<<"$ingress" | head -1 || true)
+  if [[ $path == "path: /" || -z $path ]]; then
+    echo "FAIL  $env_name's Ingress claims '$path' -- the overlay must set ingress.apiServer.path"; status=1
+  elif [[ -z $order ]]; then
+    echo "FAIL  $env_name's Ingress has no alb.ingress.kubernetes.io/group.order ($path overlaps other members at the default order 0)"; status=1
   else
-    echo "FAIL  $env_name does not render"; status=1
+    echo "ok    $env_name's Ingress: $path, $order"
   fi
 done
 
