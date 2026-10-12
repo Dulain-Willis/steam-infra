@@ -23,13 +23,19 @@ TUNNEL_PID_FILE="$LOG_DIR/admin-alb-tunnel.pid"
 BASTION_ID=$(tf output -raw bastion_instance_id 2>/dev/null || true)
 [[ -n "$BASTION_ID" ]] || fail "missing bastion_instance_id output — did Stage 3 (AWS) run?"
 
+# The Airflow chart names its api-server Ingress <release>-ingress. Looked up
+# by name rather than `{.items[0]}`: #119 adds a second Airflow, and an
+# order-dependent pick over every Ingress in the namespace would start
+# reporting an arbitrary one of them without failing.
+AIRFLOW_INGRESS="airflow-ingress"
+
 nstep 1 "waiting for the ALB hostname to be assigned..."
 ALB_HOST=""
 deadline=$((SECONDS + 300))
 until [[ -n "$ALB_HOST" ]]; do
-  ALB_HOST=$(kubectl get ingress -n airflow -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+  ALB_HOST=$(kubectl get ingress "$AIRFLOW_INGRESS" -n airflow -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
   [[ -n "$ALB_HOST" ]] && break
-  (( SECONDS < deadline )) || fail "ALB hostname never appeared on the airflow Ingress"
+  (( SECONDS < deadline )) || fail "ALB hostname never appeared on Ingress $AIRFLOW_INGRESS in namespace airflow"
   sleep 10
 done
 ok "ALB hostname: $ALB_HOST"

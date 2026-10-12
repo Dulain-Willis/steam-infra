@@ -4,6 +4,12 @@ terraform {
       source  = "snowflakedb/snowflake"
       version = "~> 2.0"
     }
+    # Generates the service users' RSA key pairs (#114). The private keys only
+    # ever exist in this module's state, which the S3 backend encrypts.
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 
   required_version = ">= 1.12"

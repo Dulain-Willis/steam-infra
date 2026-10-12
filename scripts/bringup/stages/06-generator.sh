@@ -93,8 +93,24 @@ after=$(row_count)
 ok "event-table rows grew: $before -> $after"
 
 nstep 6 "running end-to-end smoke test (RDS write -> Snowflake)..."
+# Reads the landed row as the prod Airflow service user with TRANSFORMER_PROD,
+# which is the identity prod dbt reads STEAM_RAW with — so this proves the
+# loader's write *and* the transformer's read grant in one pass, and no part
+# of it runs as ACCOUNTADMIN. The key only exists as a sensitive tofu output
+# and the test reads a file, so write it to one, mode 600, removed on exit.
+run_step "tofu init (snowflake)" tf_snowflake init -input=false
+SMOKE_KEY_FILE=$(mktemp)
+# shellcheck disable=SC2064  # expand SMOKE_KEY_FILE now, not at trap time
+trap "tunnel_cleanup; rm -f '$SMOKE_KEY_FILE'" EXIT
+(umask 077; sf_output prod_airflow_private_key >"$SMOKE_KEY_FILE")
+SMOKE_USER=$(sf_output prod_airflow_user)
+
 DB_HOST=127.0.0.1 DB_PORT=15432 DB_PASSWORD="$DB_PASSWORD" \
-  SNOWFLAKE_KEY_FILE="$SNOWFLAKE_PRIVATE_KEY_PATH" \
+  SNOWFLAKE_USER="$SMOKE_USER" \
+  SNOWFLAKE_ROLE=TRANSFORMER_PROD \
+  SNOWFLAKE_DATABASE="$SNOWFLAKE_RAW_DATABASE" \
+  SNOWFLAKE_SCHEMA="$SNOWFLAKE_SOURCE_SCHEMA" \
+  SNOWFLAKE_KEY_FILE="$SMOKE_KEY_FILE" \
   run_step "smoke test" uv run --with-requirements "$REPO_ROOT/scripts/requirements-smoke-test.txt" "$REPO_ROOT/scripts/smoke-test.py"
 
 close_rds_tunnel

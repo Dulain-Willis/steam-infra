@@ -37,8 +37,11 @@ Same `--start-from`/`--stop-after` flags; same per-stage scripts in
 
 ## One-time setup
 
-1. A Snowflake account, with a user that can `CREATE`/`DROP DATABASE` and
-   create tables (role `ACCOUNTADMIN` by default — see Conventions below).
+1. A Snowflake account, with a user holding `ACCOUNTADMIN`. That is the
+   bootstrap identity only: it is what OpenTofu creates the databases, roles
+   and service users as. Nothing in the pipeline itself runs as it — the
+   Kafka sink and Airflow each authenticate as their own service user with a
+   least-privilege role (see Conventions below).
 2. Generate an RSA key pair and register the public half on that user:
    ```bash
    openssl genpkey -algorithm RSA -out .secrets/snowflake_key.p8 -pkeyopt rsa_keygen_bits:2048
@@ -73,8 +76,14 @@ Same `--start-from`/`--stop-after` flags; same per-stage scripts in
 
 Not configurable via `.env` — same for every environment:
 
-- Snowflake database `STEAM_PROJECT`, role `ACCOUNTADMIN`, warehouse
-  `COMPUTE_WH`, schema `PUBLIC`.
+- Snowflake databases `STEAM_RAW` (CDC landing tables, in schema
+  `STEAM_RDS` — named after the source system) and `STEAM_PROD` (prod's dbt
+  build, in bare layer schemas), warehouse `COMPUTE_WH`.
+- Snowflake roles `LOADER` (writes `STEAM_RAW`, reads nothing) and
+  `TRANSFORMER_PROD` (reads `STEAM_RAW`, writes only `STEAM_PROD`), each
+  granted to exactly one service user whose RSA key pair OpenTofu generates
+  and bring-up copies into a Kubernetes Secret. Bring-up asserts the
+  boundary both ways before it continues.
 - AWS region `us-east-1`.
 
 ## Edit these when you copy the repo

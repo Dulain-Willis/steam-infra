@@ -8,21 +8,24 @@
 # ///
 """Run one Snowflake statement and print its rows, for bring-up/teardown verify steps.
 
-    uv run lib/snowflake_query.py "SHOW DATABASES LIKE 'STEAM_PROJECT'"
-    uv run lib/snowflake_query.py --role LOADER "SELECT 1"
+    uv run lib/snowflake_query.py "SHOW DATABASES LIKE 'STEAM_RAW'"
+    uv run lib/snowflake_query.py --role LOADER "CREATE TABLE ..."
 
 Rows go to stdout, one per line, fields tab-separated — so "did this find
 anything" is `[[ -n "$(...)" ]]` in bash (see sf_query/snowflake_database_exists
-in lib/env.sh) and a denied statement is a non-zero exit.
+in lib/env.sh) and a denied statement is a non-zero exit. That exit code is
+what bring-up's grant-isolation check asserts on (#114).
 
 Database lifecycle lives in terraform/snowflake, not here (#113): this is a
 read/verify path only, so a "successful" apply or destroy is still checked
 against what Snowflake actually reports.
 
-Auth comes from .env (SNOWFLAKE_ACCOUNT — the combined <ORG>-<ACCOUNT> form
-the connector wants, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH); role and
-warehouse default to the fixed values lib/env.sh exports, so bash and Python
-share one source of config.
+Auth comes from the environment: SNOWFLAKE_ACCOUNT (the combined
+<ORG>-<ACCOUNT> form the connector wants), SNOWFLAKE_USER,
+SNOWFLAKE_PRIVATE_KEY_PATH — .env's operator values by default, or a service
+user's name and a temporary key file exported by the caller, which is how the
+grant-isolation check authenticates as each pipeline identity in turn.
+SNOWFLAKE_WAREHOUSE comes from lib/env.sh.
 """
 
 import argparse
@@ -55,8 +58,8 @@ def main():
     parser.add_argument("sql", help="the statement to run")
     parser.add_argument(
         "--role",
-        default=os.environ.get("SNOWFLAKE_ROLE", "ACCOUNTADMIN"),
-        help="run as this role (default: $SNOWFLAKE_ROLE)",
+        default="ACCOUNTADMIN",
+        help="run as this role (default: ACCOUNTADMIN, the bootstrap identity)",
     )
     args = parser.parse_args()
 
