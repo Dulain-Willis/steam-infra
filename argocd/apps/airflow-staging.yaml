@@ -18,7 +18,7 @@ spec:
           - $values/k8s/airflow/values-staging.yaml
           - $values/k8s/airflow/values-image-staging.yaml
     - repoURL: https://github.com/Dulain-Willis/steam-infra.git
-      targetRevision: main
+      targetRevision: spec-112-environments
       ref: values
   destination:
     server: https://kubernetes.default.svc
