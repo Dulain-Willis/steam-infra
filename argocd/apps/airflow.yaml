@@ -10,9 +10,11 @@ spec:
       chart: airflow
       targetRevision: 1.22.0
       helm:
+        # Base, then the prod overlay, then prod's image -- later files win.
         valueFiles:
           - $values/k8s/airflow/values.yaml
-          - $values/k8s/airflow/values-image.yaml
+          - $values/k8s/airflow/values-prod.yaml
+          - $values/k8s/airflow/values-image-prod.yaml
     - repoURL: https://github.com/Dulain-Willis/steam-infra.git
       targetRevision: main
       ref: values
