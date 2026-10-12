@@ -102,10 +102,8 @@ run_step "tofu init (snowflake)" tf_snowflake init -input=false
 SMOKE_KEY_FILE=$(mktemp)
 # shellcheck disable=SC2064  # expand SMOKE_KEY_FILE now, not at trap time
 trap "tunnel_cleanup; rm -f '$SMOKE_KEY_FILE'" EXIT
-(umask 077; tf_snowflake output -raw prod_airflow_private_key >"$SMOKE_KEY_FILE")
-SMOKE_USER=$(tf_snowflake output -raw prod_airflow_user)
-[[ -s "$SMOKE_KEY_FILE" && -n "$SMOKE_USER" ]] \
-  || fail "missing prod_airflow service-user outputs from terraform/snowflake — did Stage 2 (Snowflake) run?"
+(umask 077; sf_output prod_airflow_private_key >"$SMOKE_KEY_FILE")
+SMOKE_USER=$(sf_output prod_airflow_user)
 
 DB_HOST=127.0.0.1 DB_PORT=15432 DB_PASSWORD="$DB_PASSWORD" \
   SNOWFLAKE_USER="$SMOKE_USER" \

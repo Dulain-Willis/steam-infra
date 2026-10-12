@@ -64,8 +64,12 @@ for db in "${SNOWFLAKE_PROJECT_DATABASES[@]}"; do
   snowflake_database_exists "$db" \
     || fail "$db missing after tofu apply — check SHOW DATABASES and terraform/snowflake/databases.tf"
 done
-# The sink creates its tables but never the schema, so this one is load-bearing.
-[[ -n "$(sf_query "SHOW SCHEMAS LIKE '$SNOWFLAKE_SOURCE_SCHEMA' IN DATABASE $SNOWFLAKE_RAW_DATABASE")" ]] \
+# The sink creates its tables but never the schema, so this one is
+# load-bearing. The query's status is checked separately from its output: a
+# failed query must not read as "the schema is there".
+schema_rows=$(sf_query "SHOW SCHEMAS LIKE '$SNOWFLAKE_SOURCE_SCHEMA' IN DATABASE $SNOWFLAKE_RAW_DATABASE") \
+  || fail "could not query Snowflake for $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA — see the error above"
+[[ -n "$schema_rows" ]] \
   || fail "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA missing after tofu apply — the Kafka sink cannot create it itself"
 ok "${SNOWFLAKE_PROJECT_DATABASES[*]} present, $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA present"
 
@@ -80,15 +84,21 @@ probe_as() {
   local identity="$1" role="$2" sql="$3"
   local key="$KEY_DIR/$identity.p8"
   if [[ ! -f "$key" ]]; then
-    (umask 077; tf_snowflake output -raw "${identity}_private_key" >"$key")
+    (umask 077; sf_output "${identity}_private_key" >"$key")
   fi
-  SNOWFLAKE_USER="$(tf_snowflake output -raw "${identity}_user")" \
+  SNOWFLAKE_USER="$(sf_output "${identity}_user")" \
     SNOWFLAKE_PRIVATE_KEY_PATH="$key" \
     sf_query "$sql" --role "$role" 2>&1
 }
 
 for grant_case in "${GRANT_CASES[@]}"; do
   read -r identity role target expect <<<"$grant_case"
+  # A typo'd or missing expectation would otherwise read as "deny" and pass
+  # silently, which is the one failure mode a check like this must not have.
+  case "$expect" in
+    allow | deny) ;;
+    *) fail "grant case '$grant_case' has an unknown expectation '$expect' — use allow or deny" ;;
+  esac
   # CREATE OR REPLACE so a probe table left behind by an interrupted run
   # can't be mistaken for a missing privilege. DDL needs no running warehouse.
   if output=$(probe_as "$identity" "$role" "CREATE OR REPLACE TABLE $target.$PROBE_TABLE (probe int)"); then

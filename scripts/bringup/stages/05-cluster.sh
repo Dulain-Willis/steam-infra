@@ -107,12 +107,10 @@ ok "rds-credentials (kafka)"
 # Getting this wrong fails at DAG-run time, not here, so the two are built
 # separately rather than shared.
 run_step "tofu init (snowflake)" tf_snowflake init -input=false
-LOADER_USER=$(tf_snowflake output -raw loader_user)
-LOADER_KEY=$(tf_snowflake output -raw loader_private_key)
-PROD_USER=$(tf_snowflake output -raw prod_airflow_user)
-PROD_KEY=$(tf_snowflake output -raw prod_airflow_private_key)
-[[ -n "$LOADER_USER" && -n "$LOADER_KEY" && -n "$PROD_USER" && -n "$PROD_KEY" ]] \
-  || fail "missing service-user outputs from terraform/snowflake — did Stage 2 (Snowflake) run?"
+LOADER_USER=$(sf_output loader_user)
+LOADER_KEY=$(sf_output loader_private_key)
+PROD_USER=$(sf_output prod_airflow_user)
+PROD_KEY=$(sf_output prod_airflow_private_key)
 
 kubectl create secret generic snowflake-keypair -n kafka \
   --from-literal=private_key="$(grep -v '^-----' <<<"$LOADER_KEY" | tr -d '\n')" \

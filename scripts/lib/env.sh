@@ -67,6 +67,15 @@ SNOWFLAKE_PROJECT_USER_PATTERN='STEAM\_%'
 
 tf() { tofu -chdir="$TF_DIR" "$@"; }
 
+# sf_output NAME — one value from terraform/snowflake, with a message naming
+# the stage that produces it. Used for the service-user names and private
+# keys; never through run_step, which hides stdout. Requires a prior
+# `tf_snowflake init`.
+sf_output() {
+  tf_snowflake output -raw "$1" \
+    || fail "no $1 output from terraform/snowflake — did Stage 2 (Snowflake) run?"
+}
+
 # The Snowflake root module (own state, own key in the same bucket), so a
 # Snowflake change can't block an AWS plan or the other way round.
 tf_snowflake() { tofu -chdir="$TF_SNOWFLAKE_DIR" "$@"; }
