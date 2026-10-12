@@ -59,12 +59,19 @@ migrateDatabaseJob:
 # it or the whole group stops reconciling and no member is updated -- which is
 # the reason it lives here rather than in each overlay.
 #
-# `path` and `alb.ingress.kubernetes.io/group.order` are per-environment and
-# set in the overlay: /airflow is a prefix of /airflow-staging, so the two
-# rules overlap and the order they are evaluated in decides which one wins.
+# `enabled`, `path` and `alb.ingress.kubernetes.io/group.order` are all set in
+# the overlay: /airflow is a prefix of /airflow-staging, so the two rules
+# overlap and the order they are evaluated in decides which one wins.
+#
+# `enabled` is in the overlay rather than here *because* `path` has to be, so
+# that the two fail together. With `enabled: true` in the base, an overlay
+# that forgot `path` would render an Ingress claiming `/` at the default order
+# 0 into this group -- which is evaluated before prod's /airflow rule and
+# swallows argocd's too, breaking every member instead of only itself. With
+# both in the overlay, forgetting them renders no Ingress at all: that
+# environment has no URL, and nothing else on the ALB notices.
 ingress:
   apiServer:
-    enabled: true
     ingressClassName: alb
     pathType: Prefix
     annotations:

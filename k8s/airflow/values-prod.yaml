@@ -79,8 +79,11 @@ extraEnv: |
 # evaluated first, and the default is 0 -- so prod takes 20 and staging must
 # take something lower, leaving room on either side. argocd's `/argocd` rule
 # does not overlap either path and stays at the default.
+#
+# `enabled` lives here too, deliberately paired with `path` -- see values.yaml.
 ingress:
   apiServer:
+    enabled: true
     path: /airflow
     annotations:
       alb.ingress.kubernetes.io/group.order: "20"
