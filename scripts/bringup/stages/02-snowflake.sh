@@ -37,8 +37,13 @@ env_complete || fail ".env incomplete"
 #
 # Both halves matter: a permitted write proving the identity works at all, and
 # a forbidden write proving the boundary is enforced by grants rather than by
-# convention. Add a pair of rows per role as later tickets add them — #115
-# DEVELOPER, #116 CI, #119 TRANSFORMER_STAGING — and nothing else changes.
+# convention. Add a pair of rows per role as later tickets add them — #116 CI,
+# #119 TRANSFORMER_STAGING — and nothing else changes.
+#
+# The `developer` identity is the operator's STEAM_DEV_<NAME> user; its key is
+# the operator's own from .env rather than a tofu output, because
+# terraform/snowflake registers their existing public key on it and so never
+# holds the private half (grant_check_local_key, below).
 #
 # One invariant to preserve when adding rows: **every deny target is also some
 # other identity's allow target.** Snowflake answers "you have no USAGE on this
@@ -52,6 +57,9 @@ GRANT_CASES=(
   "loader       LOADER           $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
   "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_PROD_DATABASE.PUBLIC                  allow"
   "prod_airflow TRANSFORMER_PROD $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
+  "developer    DEVELOPER        $SNOWFLAKE_DEV_DATABASE.PUBLIC                   allow"
+  "developer    DEVELOPER        $SNOWFLAKE_PROD_DATABASE.PUBLIC                  deny"
+  "developer    DEVELOPER        $SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA deny"
 )
 
 nstep 1 "applying terraform/snowflake..."
@@ -83,11 +91,20 @@ ok "${SNOWFLAKE_PROJECT_DATABASES[*]} present, $SNOWFLAKE_RAW_DATABASE.$SNOWFLAK
 
 nstep 3 "checking grant isolation as each pipeline identity..."
 trap grant_check_cleanup EXIT
+grant_check_local_key developer "$(sf_output operator_developer_user)" \
+  "$SNOWFLAKE_PRIVATE_KEY_PATH"
 grant_isolation_check "${GRANT_CASES[@]}"
 
-nstep 4 "checking the raw handoff: LOADER writes it, TRANSFORMER_PROD reads it..."
+nstep 4 "checking the raw handoff: LOADER writes it, the readers read it..."
 # A read *denial* is not probed: LOADER has no USAGE on STEAM_PROD at all,
 # which its write-deny case above already proves, and a read probe would fail
 # for the same reason without telling us anything new.
+#
+# DEVELOPER's read is checked the same way as prod's, and for the same reason:
+# every dev build's stg layer selects from the landing tables, and the case
+# table above only probes writes — where DEVELOPER on the raw database must be
+# denied.
 grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD \
+  "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA"
+grant_handoff_check loader LOADER developer DEVELOPER \
   "$SNOWFLAKE_RAW_DATABASE.$SNOWFLAKE_SOURCE_SCHEMA"

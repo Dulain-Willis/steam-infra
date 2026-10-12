@@ -30,3 +30,16 @@ resource "snowflake_database" "prod" {
   name    = "STEAM_PROD"
   comment = "prod dbt build — stg, int, marts_* (managed by terraform/snowflake)"
 }
+
+# Every developer's and every PR's dbt build, separated by a schema prefix
+# rather than by database: dbt_<name>_stg and ci_pr_<N>_stg, from
+# steam-analytics' generate_schema_name macro. dbt creates those schemas
+# itself, so nothing here enumerates them — and teardown drops the database,
+# which takes every developer and CI schema with it.
+#
+# PUBLIC is kept (unlike STEAM_RAW): it is the one schema that exists before
+# any dbt run, which is what bring-up's grant check writes its probe table in.
+resource "snowflake_database" "dev" {
+  name    = "STEAM_DEV"
+  comment = "developer and CI dbt builds — dbt_<name>_* and ci_pr_<N>_* (managed by terraform/snowflake)"
+}

@@ -42,6 +42,9 @@ DB_USER="steam_proj_admin"
 REPLICATION_SLOT_NAME="debezium_steam"
 SNOWFLAKE_RAW_DATABASE="STEAM_RAW"
 SNOWFLAKE_PROD_DATABASE="STEAM_PROD"
+# Developer and CI dbt builds, separated by schema prefix: dbt_<name>_<layer>
+# and ci_pr_<N>_<layer> (steam-analytics' generate_schema_name).
+SNOWFLAKE_DEV_DATABASE="STEAM_DEV"
 # The schema in STEAM_RAW the Kafka sink lands tables in, named after the
 # source system (the `steam` RDS Postgres database Debezium captures) rather
 # than PUBLIC. dbt's sources read the same pair.
@@ -49,19 +52,22 @@ SNOWFLAKE_SOURCE_SCHEMA="STEAM_RDS"
 SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
 export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
   REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_PROD_DATABASE \
-  SNOWFLAKE_SOURCE_SCHEMA SNOWFLAKE_WAREHOUSE
+  SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA SNOWFLAKE_WAREHOUSE
 
 # Every Snowflake object terraform/snowflake owns, by name. Bring-up's
 # leftover detection, its verify step and teardown's $0 inventory all walk
 # these, so "did we leave anything behind" can't drift from "what do we
-# create". Add to them when a ticket adds an object: #115 STEAM_DEV +
-# DEVELOPER, #116 CI, #119 STEAM_STAGING + TRANSFORMER_STAGING.
-SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE")
-# Roles have no shared prefix, so they are listed by exact name. Service users
-# all match STEAM\_%, so they are matched by pattern instead (`_` is a
-# single-character wildcard in SQL LIKE, hence the escape).
+# create". Add to them when a ticket adds an object: #116 CI, #119
+# STEAM_STAGING + TRANSFORMER_STAGING.
+SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE" "$SNOWFLAKE_DEV_DATABASE")
+# Roles have no shared prefix, so they are listed by exact name. Users — the
+# service users and the developers' STEAM_DEV_<NAME> users alike — all match
+# STEAM\_%, so they are matched by pattern instead (`_` is a single-character
+# wildcard in SQL LIKE, hence the escape). The operator's own Snowflake user
+# deliberately does not match: it is not ours to remove, which is also why
+# their developer user is a separate STEAM_DEV_<NAME> one.
 # shellcheck disable=SC2034  # read by stage scripts that source this file
-SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_PROD)
+SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_PROD DEVELOPER)
 # shellcheck disable=SC2034  # read by stage scripts that source this file
 SNOWFLAKE_PROJECT_USER_PATTERN='STEAM\_%'
 

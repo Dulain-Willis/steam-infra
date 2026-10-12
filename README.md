@@ -77,19 +77,29 @@ Same `--start-from`/`--stop-after` flags; same per-stage scripts in
 Not configurable via `.env` — same for every environment:
 
 - Snowflake databases `STEAM_RAW` (CDC landing tables, in schema
-  `STEAM_RDS` — named after the source system) and `STEAM_PROD` (prod's dbt
-  build, in bare layer schemas), warehouse `COMPUTE_WH`.
-- Snowflake roles `LOADER` (writes `STEAM_RAW`, reads nothing) and
-  `TRANSFORMER_PROD` (reads `STEAM_RAW`, writes only `STEAM_PROD`), each
-  granted to exactly one service user whose RSA key pair OpenTofu generates
-  and bring-up copies into a Kubernetes Secret. Bring-up asserts the
-  boundary both ways before it continues.
+  `STEAM_RDS` — named after the source system), `STEAM_PROD` (prod's dbt
+  build, in bare layer schemas) and `STEAM_DEV` (every developer's and every
+  PR's build, in prefixed schemas `dbt_<name>_<layer>` /
+  `ci_pr_<N>_<layer>`), warehouse `COMPUTE_WH`.
+- Snowflake roles `LOADER` (writes `STEAM_RAW`, reads nothing),
+  `TRANSFORMER_PROD` (reads `STEAM_RAW`, writes only `STEAM_PROD`) and
+  `DEVELOPER` (reads `STEAM_RAW`, writes only `STEAM_DEV`, no grant at all on
+  `STEAM_PROD`). The first two are granted to exactly one service user each,
+  whose RSA key pair OpenTofu generates and bring-up copies into a Kubernetes
+  Secret; `DEVELOPER` is granted to one `STEAM_DEV_<NAME>` user per entry in
+  `terraform/snowflake`'s `developers` variable — onboarding a teammate is
+  that one entry, holding their name and their RSA *public* key. Bring-up
+  asserts every boundary both ways before it continues.
 - AWS region `us-east-1`.
 
 ## Edit these when you copy the repo
 
 Account-specific values that can't come from `.env` or `tofu output`:
 
+- The developers — the `developers` variable's default in
+  `terraform/snowflake/variables.tf`. It ships with this project's operator and
+  their RSA public key; replace the entry rather than adding to it, or the next
+  bring-up creates a Snowflake user for a stranger.
 - The ArgoCD repo URL — `repoURL` in `argocd/root.yaml` and every
   `argocd/apps/*.yaml`.
 - The ECR image URL — `image` in `k8s/kafka/connect/kafka-connect.yaml`.

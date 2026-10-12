@@ -7,6 +7,13 @@
 # |------------------|-----------|------------|
 # | LOADER           | —         | STEAM_RAW  |
 # | TRANSFORMER_PROD | STEAM_RAW | STEAM_PROD |
+# | DEVELOPER        | STEAM_RAW | STEAM_DEV  |
+#
+# DEVELOPER has no grant whatsoever on STEAM_PROD, not even read: only the CI
+# identity (#116) needs prod read, for slim-CI deferral, and a developer
+# running dbt does a full build into their own schemas with no --defer. That
+# absence is what makes "a dev build changes nothing in STEAM_PROD" provable
+# by bring-up's grant check rather than asserted (#112's Q1).
 #
 # Nothing in the pipeline runs as ACCOUNTADMIN any more. Tofu's own provider
 # identity still does, because something has to create roles and users at
@@ -32,11 +39,31 @@ locals {
   warehouse = "COMPUTE_WH"
 
   # Every role that runs SQL needs USAGE on it. Add roles here as later
-  # tickets add them (#115 DEVELOPER, #116 CI, #119 TRANSFORMER_STAGING).
+  # tickets add them (#116 CI, #119 TRANSFORMER_STAGING).
   compute_roles = [
     snowflake_account_role.loader.name,
     snowflake_account_role.transformer_prod.name,
+    snowflake_account_role.developer.name,
   ]
+
+  # var.developers keyed by name, for the for_each'd user and role grant.
+  developers = { for developer in var.developers : developer.name => developer }
+
+  # Roles that read the landing tables in STEAM_RAW. Every environment's dbt
+  # build does, with the same grants, so this is a list rather than a block
+  # per role — #116 adds CI, #119 TRANSFORMER_STAGING.
+  raw_readers = [
+    snowflake_account_role.transformer_prod.name,
+    snowflake_account_role.developer.name,
+  ]
+
+  # Which database each role builds into, same idea. #116 adds CI =>
+  # STEAM_DEV (two roles writing one database is fine), #119
+  # TRANSFORMER_STAGING => STEAM_STAGING.
+  build_databases = {
+    (snowflake_account_role.transformer_prod.name) = snowflake_database.prod.name
+    (snowflake_account_role.developer.name)        = snowflake_database.dev.name
+  }
 
   # One service user per non-human identity. Each gets exactly one role, a
   # tofu-generated key pair, and a pair of outputs (<key>_user,
@@ -63,6 +90,11 @@ resource "snowflake_account_role" "loader" {
 resource "snowflake_account_role" "transformer_prod" {
   name    = "TRANSFORMER_PROD"
   comment = "reads STEAM_RAW, writes only STEAM_PROD"
+}
+
+resource "snowflake_account_role" "developer" {
+  name    = "DEVELOPER"
+  comment = "reads STEAM_RAW, writes only STEAM_DEV; no grant on STEAM_STAGING or STEAM_PROD"
 }
 
 resource "snowflake_grant_privileges_to_account_role" "warehouse" {
@@ -121,12 +153,17 @@ resource "snowflake_grant_privileges_to_account_role" "loader_raw_future_schemas
   }
 }
 
-# --- TRANSFORMER_PROD: read STEAM_RAW ---------------------------------------
+# --- Reading STEAM_RAW: TRANSFORMER_PROD and DEVELOPER ----------------------
+#
+# Every environment's dbt build reads the same landing tables, and the grant
+# set is identical for each, so the readers are a list — #116 adds CI, #119
+# TRANSFORMER_STAGING, and neither needs a new resource.
 #
 # Only TABLES, no VIEWS: STEAM_RAW holds nothing but sink-created tables.
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_database" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_database" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
 
   on_account_object {
@@ -135,8 +172,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_database" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_schemas" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
   depends_on        = [snowflake_schema.source_system]
 
@@ -145,8 +183,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_schemas" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_future_schemas" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
 
   on_schema {
@@ -154,8 +193,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_schemas" 
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_tables" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_tables" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["SELECT"]
 
   on_schema_object {
@@ -166,8 +206,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_tables" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_tables" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_future_tables" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["SELECT"]
 
   on_schema_object {
@@ -178,38 +219,86 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_tables" {
   }
 }
 
-# --- TRANSFORMER_PROD: write STEAM_PROD -------------------------------------
+# --- Writing a build database: TRANSFORMER_PROD and DEVELOPER ---------------
 #
-# dbt creates the layer schemas (stg, int, marts_*, elementary) itself, so it
-# needs CREATE SCHEMA on the database; it owns what it creates. The schema-level
-# grants cover schemas it did not create, PUBLIC included.
+# dbt creates its own schemas — the layer schemas in STEAM_PROD, a developer's
+# dbt_<name>_* ones in STEAM_DEV — so CREATE SCHEMA on the database is the
+# load-bearing grant; it owns what it creates. The schema-level grants cover
+# schemas it did not create: PUBLIC, and in STEAM_DEV a teammate's.
+#
+# Developers deliberately share one role rather than getting one each: that
+# database is a shared sandbox, and the schema prefix, not a grant, is what
+# keeps two developers out of each other's tables.
 
-resource "snowflake_grant_privileges_to_account_role" "prod_database" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_database" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE SCHEMA"]
 
   on_account_object {
     object_type = "DATABASE"
-    object_name = snowflake_database.prod.name
+    object_name = each.value
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_schemas" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
 
   on_schema {
-    all_schemas_in_database = snowflake_database.prod.name
+    all_schemas_in_database = each.value
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_future_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_future_schemas" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
 
   on_schema {
-    future_schemas_in_database = snowflake_database.prod.name
+    future_schemas_in_database = each.value
   }
+}
+
+# --- Developer users --------------------------------------------------------
+#
+# snowflake_user, not snowflake_service_user: the v2 provider split the two,
+# and the service variant has no password or MFA surface and cannot log into
+# the UI — which is right for the pipeline's identities and wrong for a human.
+#
+# The operator's entry creates STEAM_DEV_DULAIN rather than adopting their
+# existing DULAIN user, for three reasons. Adopting it would mean tofu
+# managing the account's ACCOUNTADMIN human: `tofu destroy` — which teardown
+# runs every session — would delete the user tofu itself authenticates as,
+# locking the operator out of their own account with no way back in. It would
+# also need an import before the first apply, and it would leave the operator
+# developing as ACCOUNTADMIN, which is exactly what #112 is removing. The new
+# user carries the operator's *existing* public key, so nothing new has to be
+# generated or distributed and their current private key authenticates as
+# either user.
+#
+# The STEAM_ prefix is also load-bearing: lib/env.sh's inventory matches
+# project users by STEAM\_%, so teardown proves these are gone without a
+# second signal, while the operator's own DULAIN stays out of it.
+
+resource "snowflake_user" "developer" {
+  for_each          = local.developers
+  name              = "STEAM_DEV_${upper(each.key)}"
+  comment           = "developer ${each.key} — runs dbt into their own schemas in STEAM_DEV"
+  default_role      = snowflake_account_role.developer.name
+  default_warehouse = local.warehouse
+
+  # One line, no PEM header or trailer — same requirement and same expression
+  # as the service users below, so either form can be pasted into
+  # var.developers.
+  rsa_public_key = replace(each.value.rsa_public_key, "/-----[A-Z ]+-----|\\n/", "")
+}
+
+resource "snowflake_grant_account_role" "developer" {
+  for_each  = local.developers
+  role_name = snowflake_account_role.developer.name
+  user_name = snowflake_user.developer[each.key].name
 }
 
 # --- Service users ----------------------------------------------------------

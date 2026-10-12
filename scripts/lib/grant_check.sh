@@ -24,9 +24,30 @@ GRANT_PROBE_TABLE="GRANT_CHECK_PROBE"
 
 _GRANT_KEY_DIR=""
 declare -A _GRANT_USER
+declare -A _GRANT_KEY
+
+# grant_check_local_key IDENTITY USER KEY_PATH — register an identity whose
+# key is already on disk instead of being a tofu output.
+#
+# The developer identity (#115) is the one such case: terraform/snowflake
+# registers the *operator's existing* public key on the user it creates for
+# them, so tofu never holds that private key and there is nothing to output.
+# The key comes from .env's SNOWFLAKE_PRIVATE_KEY_PATH instead.
+#
+# A path that doesn't exist or holds nothing is fatal here, for the same
+# reason an empty tofu output is: it would make every `deny` case for this
+# identity pass while asserting nothing.
+grant_check_local_key() {
+  local identity="$1" user="$2" key_path="$3"
+  [[ -s "$key_path" ]] \
+    || fail "private key for the $identity grant-check identity is missing or empty: $key_path"
+  _GRANT_USER[$identity]="$user"
+  _GRANT_KEY[$identity]="$key_path"
+}
 
 # _grant_check_init IDENTITY... — fetch each identity's service-user name and
-# private key once, up front, in the *calling* shell.
+# private key once, up front, in the *calling* shell. Identities already
+# registered with grant_check_local_key are left alone.
 #
 # Deliberately not done lazily inside grant_probe: that runs inside a command
 # substitution, where `fail` exits only the subshell. The redirect would have
@@ -37,10 +58,12 @@ _grant_check_init() {
   _GRANT_KEY_DIR=$(mktemp -d)
   # mktemp -d is mode 0700, so the keys inside need no further protection.
   for identity in "$@"; do
+    [[ -n "${_GRANT_KEY[$identity]:-}" ]] && continue
     sf_output "${identity}_private_key" >"$_GRANT_KEY_DIR/$identity.p8" \
       || fail "could not read ${identity}_private_key from terraform/snowflake"
     [[ -s "$_GRANT_KEY_DIR/$identity.p8" ]] \
       || fail "${identity}_private_key from terraform/snowflake is empty"
+    _GRANT_KEY[$identity]="$_GRANT_KEY_DIR/$identity.p8"
     _GRANT_USER[$identity]=$(sf_output "${identity}_user") \
       || fail "could not read ${identity}_user from terraform/snowflake"
   done
@@ -58,7 +81,7 @@ grant_check_cleanup() {
 grant_probe() {
   local identity="$1" role="$2" sql="$3"
   SNOWFLAKE_USER="${_GRANT_USER[$identity]}" \
-    SNOWFLAKE_PRIVATE_KEY_PATH="$_GRANT_KEY_DIR/$identity.p8" \
+    SNOWFLAKE_PRIVATE_KEY_PATH="${_GRANT_KEY[$identity]}" \
     sf_query "$sql" --role "$role" 2>&1
 }
 
