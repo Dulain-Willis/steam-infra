@@ -33,6 +33,17 @@ output "operator_developer_user" {
   value       = snowflake_user.developer[var.developers[0].name].name
 }
 
+output "staging_airflow_user" {
+  description = "Service user staging Airflow runs dbt as"
+  value       = snowflake_service_user.this["staging_airflow"].name
+}
+
+output "staging_airflow_private_key" {
+  description = "PKCS#8 PEM private key for the staging Airflow service user"
+  value       = tls_private_key.service_user["staging_airflow"].private_key_pem_pkcs8
+  sensitive   = true
+}
+
 output "prod_airflow_user" {
   description = "Service user prod Airflow runs dbt as"
   value       = snowflake_service_user.this["prod_airflow"].name

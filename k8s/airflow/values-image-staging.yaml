@@ -1,0 +1,12 @@
+# Staging's image (bakes in the steam-analytics dbt project, see the
+# steam-orchestration repo's Dockerfile). Bumped automatically by a bot commit
+# from steam-orchestration's build-and-push.yml workflow on every new image
+# build -- kept in its own file, one per environment, separate from values.yaml
+# and values-staging.yaml, so that automated commit only ever touches these
+# two lines.
+#
+# This is the *only* image file the bot writes. Prod's is written by the
+# promotion PR (#120), which copies the tag from here -- so every tag reaching
+# prod has run in staging first, and prod is never a rebuild (#112 story 31).
+defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
+defaultAirflowTag: 46d85e2e6baf78611ef01367b8a6e77dcbeb4762

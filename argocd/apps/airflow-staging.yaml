@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: airflow-staging
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: https://airflow.apache.org
+      chart: airflow
+      # Must stay the version airflow.yaml pins -- staging exists to be
+      # prod-like, and scripts/check-airflow-values.sh fails if they drift.
+      targetRevision: 1.22.0
+      helm:
+        # Base, then the staging overlay, then staging's image -- later files win.
+        valueFiles:
+          - $values/k8s/airflow/values.yaml
+          - $values/k8s/airflow/values-staging.yaml
+          - $values/k8s/airflow/values-image-staging.yaml
+    - repoURL: https://github.com/Dulain-Willis/steam-infra.git
+      targetRevision: spec-112-environments
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    # Its own namespace, which is also the Helm release name (ArgoCD uses the
+    # Application name): staging's workloads are airflow-staging-scheduler,
+    # -api-server, -postgresql and so on. That per-release Postgres
+    # StatefulSet is what gives staging its own metadata database -- the chart
+    # default, nothing to configure. The namespace is created by
+    # scripts/bringup/stages/05-cluster.sh, which has to exist before this
+    # syncs anyway to hold the Secrets the overlay references.
+    namespace: airflow-staging
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true

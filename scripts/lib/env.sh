@@ -41,6 +41,11 @@ DB_NAME="steam"
 DB_USER="steam_proj_admin"
 REPLICATION_SLOT_NAME="debezium_steam"
 SNOWFLAKE_RAW_DATABASE="STEAM_RAW"
+# One build database per deployed environment, bare layer schema names in
+# both (steam-analytics' generate_schema_name); the staging Airflow writes
+# the first, the prod one the second, and neither role has any grant on the
+# other's database.
+SNOWFLAKE_STAGING_DATABASE="STEAM_STAGING"
 SNOWFLAKE_PROD_DATABASE="STEAM_PROD"
 # Developer and CI dbt builds, separated by schema prefix: dbt_<name>_<layer>
 # and ci_pr_<N>_<layer> (steam-analytics' generate_schema_name).
@@ -51,15 +56,39 @@ SNOWFLAKE_DEV_DATABASE="STEAM_DEV"
 SNOWFLAKE_SOURCE_SCHEMA="STEAM_RDS"
 SNOWFLAKE_WAREHOUSE="COMPUTE_WH"
 export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
-  REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_PROD_DATABASE \
-  SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA SNOWFLAKE_WAREHOUSE
+  REPLICATION_SLOT_NAME SNOWFLAKE_RAW_DATABASE SNOWFLAKE_STAGING_DATABASE \
+  SNOWFLAKE_PROD_DATABASE SNOWFLAKE_DEV_DATABASE SNOWFLAKE_SOURCE_SCHEMA \
+  SNOWFLAKE_WAREHOUSE
+
+# The Airflow environments on the cluster, in the order to report them.
+#
+# Each name is, by convention, four things at once: the ArgoCD Application
+# (argocd/apps/airflow*.yaml), the Helm release the chart derives its resource
+# names from, the namespace it deploys into, and the ALB path prefix it is
+# served at (`/<name>`). That is why one list can drive bring-up's namespace
+# creation, secrets, Application wait, Deployment health checks and printed
+# links. scripts/check-airflow-values.sh asserts the path half of the
+# convention against the rendered Ingress, so it cannot quietly stop holding.
+#
+# Adding an environment means, together: this list;
+# k8s/airflow/values-<env>.yaml and values-image-<env>.yaml; an
+# argocd/apps/airflow-<env>.yaml Application; and an entry in
+# bringup/stages/05-cluster.sh's AIRFLOW_SNOWFLAKE_IDENTITY with a matching
+# service user in terraform/snowflake/identities.tf. Nothing else — teardown's
+# cascade list and bring-up's namespaces, Secrets, EXPECTED_APPS, health
+# checks and printed links all read this list.
+#
+# Two of those are checked mechanically, both directions, by
+# scripts/check-airflow-values.sh (this list against the Applications), and
+# 05-cluster.sh fails by name on a missing AIRFLOW_SNOWFLAKE_IDENTITY entry.
+# shellcheck disable=SC2034  # read by stage scripts that source this file
+AIRFLOW_ENVIRONMENTS=(airflow airflow-staging)
 
 # Every Snowflake object terraform/snowflake owns, by name. Bring-up's
 # leftover detection, its verify step and teardown's $0 inventory all walk
 # these, so "did we leave anything behind" can't drift from "what do we
-# create". Add to them when a ticket adds an object: #116 CI, #119
-# STEAM_STAGING + TRANSFORMER_STAGING.
-SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE" "$SNOWFLAKE_DEV_DATABASE")
+# create". Add to them when a ticket adds an object: #116 CI.
+SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_STAGING_DATABASE" "$SNOWFLAKE_PROD_DATABASE" "$SNOWFLAKE_DEV_DATABASE")
 # Roles have no shared prefix, so they are listed by exact name. Users — the
 # service users and the developers' STEAM_DEV_<NAME> users alike — all match
 # STEAM\_%, so they are matched by pattern instead (`_` is a single-character
@@ -67,7 +96,7 @@ SNOWFLAKE_PROJECT_DATABASES=("$SNOWFLAKE_RAW_DATABASE" "$SNOWFLAKE_PROD_DATABASE
 # deliberately does not match: it is not ours to remove, which is also why
 # their developer user is a separate STEAM_DEV_<NAME> one.
 # shellcheck disable=SC2034  # read by stage scripts that source this file
-SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_PROD DEVELOPER)
+SNOWFLAKE_PROJECT_ROLES=(LOADER TRANSFORMER_STAGING TRANSFORMER_PROD DEVELOPER)
 # shellcheck disable=SC2034  # read by stage scripts that source this file
 SNOWFLAKE_PROJECT_USER_PATTERN='STEAM\_%'
 

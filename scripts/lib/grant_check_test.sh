@@ -56,20 +56,40 @@ sf_query() {
 source "$REPO_ROOT/scripts/lib/grant_check.sh"
 
 RAW="STEAM_RAW.STEAM_RDS"
+STAGING="STEAM_STAGING.PUBLIC"
 PROD="STEAM_PROD.PUBLIC"
 DEV="STEAM_DEV.PUBLIC"
+# The same table bring-up's Stage 2 ships, so a row added there without a
+# scenario here shows up as a stub that does not model it.
 CASES=(
-  "loader       LOADER           $RAW  allow"
-  "loader       LOADER           $PROD deny"
-  "prod_airflow TRANSFORMER_PROD $PROD allow"
-  "prod_airflow TRANSFORMER_PROD $RAW  deny"
-  "developer    DEVELOPER        $DEV  allow"
-  "developer    DEVELOPER        $PROD deny"
-  "developer    DEVELOPER        $RAW  deny"
+  "loader          LOADER              $RAW     allow"
+  "loader          LOADER              $PROD    deny"
+  "staging_airflow TRANSFORMER_STAGING $STAGING allow"
+  "staging_airflow TRANSFORMER_STAGING $PROD    deny"
+  "staging_airflow TRANSFORMER_STAGING $RAW     deny"
+  "prod_airflow    TRANSFORMER_PROD    $PROD    allow"
+  "prod_airflow    TRANSFORMER_PROD    $STAGING deny"
+  "prod_airflow    TRANSFORMER_PROD    $RAW     deny"
+  "developer       DEVELOPER           $DEV     allow"
+  "developer       DEVELOPER           $STAGING deny"
+  "developer       DEVELOPER           $PROD    deny"
+  "developer       DEVELOPER           $RAW     deny"
 )
 
-CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV"
-CORRECT_READABLE="LOADER|$RAW TRANSFORMER_PROD|$RAW DEVELOPER|$RAW"
+CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_STAGING|$STAGING TRANSFORMER_PROD|$PROD DEVELOPER|$DEV"
+CORRECT_READABLE="LOADER|$RAW TRANSFORMER_STAGING|$RAW TRANSFORMER_PROD|$RAW DEVELOPER|$RAW"
+
+# Every failure scenario below states what it *changes* about the correct
+# matrix instead of respelling it. A respelt matrix also drops every role a
+# later ticket adds, so the scenario still goes red — for the wrong reason,
+# asserting nothing about the boundary it is named after. #119 found exactly
+# that when it added a third build database.
+plus() { printf '%s %s' "$1" "${*:2}"; }
+minus() {
+  local out=" $1 " entry
+  for entry in "${@:2}"; do out=${out/ $entry / }; done
+  printf '%s' "$out"
+}
 
 # The developer identity's key is the operator's own, already on disk, rather
 # than a tofu-generated one — the module registers the operator's existing
@@ -105,6 +125,7 @@ run_scenario() {
       export WRITABLE READABLE EMPTY_KEY_FOR
       grant_check_local_key developer SVC_developer "${DEV_KEY:-$DEV_KEY_FILE}" \
         && grant_isolation_check "${cases[@]}" \
+        && grant_handoff_check loader LOADER staging_airflow TRANSFORMER_STAGING "$RAW" \
         && grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW" \
         && grant_handoff_check loader LOADER developer DEVELOPER "$RAW"
       grant_check_cleanup
@@ -127,21 +148,21 @@ run_scenario "correct grants: all cases and the handoff hold" pass
 
 # 2. The boundary is broken: LOADER can also write STEAM_PROD. This is the
 #    scenario a live run cannot produce, and the whole reason for the check.
-WRITABLE="LOADER|$RAW LOADER|$PROD TRANSFORMER_PROD|$PROD" \
+WRITABLE=$(plus "$CORRECT_WRITABLE" "LOADER|$PROD") \
   run_scenario "LOADER can write STEAM_PROD: must be caught" fail
 
 # 3. The other direction: TRANSFORMER_PROD can write the raw database.
-WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD TRANSFORMER_PROD|$RAW" \
+WRITABLE=$(plus "$CORRECT_WRITABLE" "TRANSFORMER_PROD|$RAW") \
   run_scenario "TRANSFORMER_PROD can write STEAM_RAW: must be caught" fail
 
 # 4. A permitted write is denied — a missing grant, not a wrong one.
-WRITABLE="TRANSFORMER_PROD|$PROD" \
+WRITABLE=$(minus "$CORRECT_WRITABLE" "LOADER|$RAW") \
   run_scenario "LOADER cannot write the landing schema: must be caught" fail
 
 # 5. The landing schema ended up with no read grant. This is exactly the
 #    failure the identities.tf schema-ordering edge prevents: every write case
 #    still passes, and only the handoff check catches it.
-READABLE="LOADER|$RAW" \
+READABLE=$(minus "$CORRECT_READABLE" "TRANSFORMER_PROD|$RAW") \
   run_scenario "TRANSFORMER_PROD cannot read the landing schema: must be caught" fail
 
 # 6. A key that won't load must not read as "denied". Before the fetch was
@@ -155,26 +176,47 @@ run_scenario "typo'd expectation: must be caught" fail "loader LOADER $PROD allo
 
 # 8. DEVELOPER can write prod — the boundary #115 exists to enforce, and the
 #    one a dev build must be physically unable to cross.
-WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV DEVELOPER|$PROD" \
+WRITABLE=$(plus "$CORRECT_WRITABLE" "DEVELOPER|$PROD") \
   run_scenario "DEVELOPER can write STEAM_PROD: must be caught" fail
 
 # 9. DEVELOPER can write the landing database. A read grant on STEAM_RAW must
 #    not come with a write.
-WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD DEVELOPER|$DEV DEVELOPER|$RAW" \
+WRITABLE=$(plus "$CORRECT_WRITABLE" "DEVELOPER|$RAW") \
   run_scenario "DEVELOPER can write STEAM_RAW: must be caught" fail
 
 # 10. DEVELOPER cannot write its own database — a dev build would fail, and a
 #     check that only probed denials would call that a pass.
-WRITABLE="LOADER|$RAW TRANSFORMER_PROD|$PROD" \
+WRITABLE=$(minus "$CORRECT_WRITABLE" "DEVELOPER|$DEV") \
   run_scenario "DEVELOPER cannot write STEAM_DEV: must be caught" fail
 
 # 11. DEVELOPER cannot read the landing tables. Every dev build's stg layer
 #     reads them, so this is the grant dev work depends on; only the handoff
 #     check sees it, exactly as for TRANSFORMER_PROD in scenario 5.
-READABLE="LOADER|$RAW TRANSFORMER_PROD|$RAW" \
+READABLE=$(minus "$CORRECT_READABLE" "DEVELOPER|$RAW") \
   run_scenario "DEVELOPER cannot read the landing schema: must be caught" fail
 
-# 12. The operator's key is missing or empty. Unlike the tofu-generated keys,
+# 12. TRANSFORMER_STAGING can write STEAM_PROD — #112 story 24, and the one
+#     boundary a promotion flow depends on: staging runs merged-but-unreviewed
+#     code, so this is the grant that stops a bad merge reaching prod's data.
+WRITABLE=$(plus "$CORRECT_WRITABLE" "TRANSFORMER_STAGING|$PROD") \
+  run_scenario "TRANSFORMER_STAGING can write STEAM_PROD: must be caught" fail
+
+# 13. And the mirror: prod's role reaching into staging's database. Harmless to
+#     prod, but it means the two environments are not actually isolated.
+WRITABLE=$(plus "$CORRECT_WRITABLE" "TRANSFORMER_PROD|$STAGING") \
+  run_scenario "TRANSFORMER_PROD can write STEAM_STAGING: must be caught" fail
+
+# 14. TRANSFORMER_STAGING cannot write its own database — staging's dbt run
+#     would fail, which a deny-only check would call a pass.
+WRITABLE=$(minus "$CORRECT_WRITABLE" "TRANSFORMER_STAGING|$STAGING") \
+  run_scenario "TRANSFORMER_STAGING cannot write STEAM_STAGING: must be caught" fail
+
+# 15. TRANSFORMER_STAGING cannot read the landing tables — staging's stg layer
+#     reads them, and only the handoff check sees this (scenario 5's shape).
+READABLE=$(minus "$CORRECT_READABLE" "TRANSFORMER_STAGING|$RAW") \
+  run_scenario "TRANSFORMER_STAGING cannot read the landing schema: must be caught" fail
+
+# 16. The operator's key is missing or empty. Unlike the tofu-generated keys,
 #     this one is a path from .env, so a wrong path or a key that was never
 #     created has to be caught at registration — an identity reached only by
 #     `deny` cases would otherwise record "could not authenticate" as

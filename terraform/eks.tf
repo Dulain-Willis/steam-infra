@@ -30,13 +30,34 @@ module "eks" {
   }
 
   eks_managed_node_groups = {
+    # Everything that isn't a Kafka broker, including *both* Airflow releases
+    # (the kafka pool below is tainted, so nothing else can land there).
+    #
+    # desired_size is 3 rather than 2 because of the VPC-CNI pod ceiling, not
+    # memory. t3.medium allows 17 pods per node, and three DaemonSets
+    # (aws-node, ebs-csi-node, kube-proxy) take one slot each on every node,
+    # so each node contributes 14 usable slots. Measured on a live cluster
+    # with one Airflow release: 28 of 34 slots used, 6 free — and a second
+    # Airflow release is 8 pods (api-server, dag-processor, scheduler,
+    # triggerer, worker, statsd, postgresql, redis). It would not schedule;
+    # the pods would sit Pending with `Too many pods` and there is no
+    # autoscaler anywhere in this repo to add a node. A third node takes it to
+    # 51 slots with ~20 free.
+    #
+    # Memory is not the constraint and adding requests would not help: only
+    # one container in the whole airflow namespace sets a memory request, and
+    # the two nodes were at 31% and 12% of allocatable when they were full on
+    # pod count. **So re-check pod slots, not memory, before adding a third
+    # environment** — `kubectl get nodes -o custom-columns=
+    # 'NAME:.metadata.name,MAXPODS:.status.allocatable.pods'` against the
+    # per-node pod counts.
     system = {
       instance_types = ["t3.medium"]
       capacity_type  = "ON_DEMAND"
 
       min_size     = 1
       max_size     = 3
-      desired_size = 2
+      desired_size = 3
     }
 
     # Dedicated pool for Kafka brokers, tainted so only workloads that

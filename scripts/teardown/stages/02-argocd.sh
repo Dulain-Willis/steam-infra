@@ -35,7 +35,13 @@ ok "stopped (or wasn't running)"
 # finishes the others. Its PVC-free resources still die with the EKS
 # cluster in Stage 5 regardless -- except its own Ingress (#107), which
 # needs its ALB deleted explicitly; see below.
-CASCADE_APPS=(root airflow connectors kafka-cluster kafka-connect strimzi-operator)
+#
+# The Airflow environments come from lib/env.sh's AIRFLOW_ENVIRONMENTS rather
+# than being spelled out: an environment missing from this list gets no
+# cascade finalizer, so root's delete removes its Application object without
+# ArgoCD tearing down the Helm release underneath it — its Ingress rule
+# survives, and step 7 then spins until the 10-minute `albs_left` timeout.
+CASCADE_APPS=(root "${AIRFLOW_ENVIRONMENTS[@]}" connectors kafka-cluster kafka-connect strimzi-operator)
 
 nstep 2 "checking whether the cluster still exists..."
 if ! aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then

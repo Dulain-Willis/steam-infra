@@ -1,10 +1,12 @@
-# The pipeline's databases. STEAM_RAW holds the CDC landing tables; STEAM_PROD
-# holds prod's dbt build. STEAM_PROJECT, the single database these replace, is
+# The pipeline's databases. STEAM_RAW holds the CDC landing tables;
+# STEAM_STAGING and STEAM_PROD hold staging's and prod's dbt builds.
+# STEAM_PROJECT, the single database these replace, is
 # gone — a rename on next bring-up rather than a migration, because there is no
 # long-lived data here (#112's Implementation Decisions).
 #
-# The names are also lib/env.sh's SNOWFLAKE_RAW_DATABASE and
-# SNOWFLAKE_PROD_DATABASE, which bash and Python read; bring-up's verify step
+# The names are also lib/env.sh's SNOWFLAKE_RAW_DATABASE,
+# SNOWFLAKE_STAGING_DATABASE and SNOWFLAKE_PROD_DATABASE, which bash and
+# Python read; bring-up's verify step
 # queries Snowflake for those names, so a drift between the two fails loudly
 # rather than silently.
 
@@ -24,6 +26,16 @@ resource "snowflake_schema" "source_system" {
   database = snowflake_database.raw.name
   name     = "STEAM_RDS"
   comment  = "landing tables from the steam RDS Postgres database, via Debezium"
+}
+
+# Staging is a faithful copy of prod's layout — the same bare layer schema
+# names, created by dbt itself — in its own database, so a staging run cannot
+# touch prod's tables even if it builds the same model. PUBLIC is kept for the
+# same reason as STEAM_DEV's: it is the one schema that exists before any dbt
+# run, which is what bring-up's grant check writes its probe table in.
+resource "snowflake_database" "staging" {
+  name    = "STEAM_STAGING"
+  comment = "staging dbt build — stg, int, marts_* (managed by terraform/snowflake)"
 }
 
 resource "snowflake_database" "prod" {
