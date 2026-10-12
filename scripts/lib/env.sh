@@ -62,9 +62,18 @@ sf_query() { uv run "$REPO_ROOT/scripts/lib/snowflake_query.py" "$@"; }
 
 # snowflake_database_exists [NAME] — asks Snowflake, rather than trusting a
 # tofu apply or destroy. Used by bring-up's and teardown's verify steps.
+#
+# A failed query is NOT "absent": an expired key or an unreachable account
+# would otherwise let teardown report $0 with the database still billing. So
+# the query's status is checked separately from its output, and a failure is
+# fatal (fail exits, even from inside an `if` condition).
 snowflake_database_exists() {
-  local name="${1:-$SNOWFLAKE_DATABASE}"
-  [[ -n "$(sf_query "SHOW DATABASES LIKE '$name'")" ]]
+  local name="${1:-$SNOWFLAKE_DATABASE}" out
+  # '' is how a single quote is escaped inside a Snowflake string literal.
+  if ! out=$(sf_query "SHOW DATABASES LIKE '${name//\'/\'\'}'"); then
+    fail "could not query Snowflake for database $name — see the error above"
+  fi
+  [[ -n "$out" ]]
 }
 
 # Resources that survive a full teardown (the tfstate bucket has
@@ -118,8 +127,10 @@ env_complete() {
   fi
   # The split form (tofu) and the combined form (Python connector, Kafka
   # sink, dbt) must name the same account, or tofu and the verify step would
-  # silently talk to two different Snowflake accounts.
-  if [[ "$SNOWFLAKE_ACCOUNT" != "$SNOWFLAKE_ORGANIZATION_NAME-$SNOWFLAKE_ACCOUNT_NAME" ]]; then
+  # silently talk to two different Snowflake accounts. Compared case-folded:
+  # account identifiers are case-insensitive, and the account URL spells them
+  # lowercase while CURRENT_ORGANIZATION_NAME() spells them uppercase.
+  if [[ "${SNOWFLAKE_ACCOUNT^^}" != "${SNOWFLAKE_ORGANIZATION_NAME^^}-${SNOWFLAKE_ACCOUNT_NAME^^}" ]]; then
     warn "SNOWFLAKE_ACCOUNT ($SNOWFLAKE_ACCOUNT) is not SNOWFLAKE_ORGANIZATION_NAME-SNOWFLAKE_ACCOUNT_NAME ($SNOWFLAKE_ORGANIZATION_NAME-$SNOWFLAKE_ACCOUNT_NAME)"
     return 1
   fi

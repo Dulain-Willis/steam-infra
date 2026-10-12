@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/scripts/teardown/stages" -maxdepth 1 -name '*.sh' | sort)
+mapfile -t STAGE_SCRIPTS < <(find "$REPO_ROOT/scripts/teardown/stages" -maxdepth 1 -name '[0-9][0-9]-*.sh' | sort)
 
 banner "steam-infra teardown"
 

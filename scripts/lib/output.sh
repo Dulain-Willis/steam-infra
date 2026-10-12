@@ -21,6 +21,9 @@ banner() { printf '\n%s%s  %s%s\n\n' "$BOLD" "$BLUE" "$1" "$RESET"; }
 # numbered scripts sit next to the calling stage script. BASH_SOURCE's last
 # element is the outermost script, i.e. the stage script itself, however
 # many lib files it has sourced.
+#
+# The glob is the same one bringup.sh/teardown.sh enumerate with, so what
+# runs and what the total counts can't disagree.
 stage() {
   local dir total
   dir=$(dirname "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}")
