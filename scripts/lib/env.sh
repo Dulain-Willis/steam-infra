@@ -70,8 +70,17 @@ export AWS_REGION EKS_CLUSTER_NAME RDS_INSTANCE_ID DB_NAME DB_USER \
 # links. scripts/check-airflow-values.sh asserts the path half of the
 # convention against the rendered Ingress, so it cannot quietly stop holding.
 #
-# Add an environment here, as k8s/airflow/values-<env>.yaml + its image file,
-# and as an argocd/apps Application, together.
+# Adding an environment means, together: this list;
+# k8s/airflow/values-<env>.yaml and values-image-<env>.yaml; an
+# argocd/apps/airflow-<env>.yaml Application; and an entry in
+# bringup/stages/05-cluster.sh's AIRFLOW_SNOWFLAKE_IDENTITY with a matching
+# service user in terraform/snowflake/identities.tf. Nothing else — teardown's
+# cascade list and bring-up's namespaces, Secrets, EXPECTED_APPS, health
+# checks and printed links all read this list.
+#
+# Two of those are checked mechanically, both directions, by
+# scripts/check-airflow-values.sh (this list against the Applications), and
+# 05-cluster.sh fails by name on a missing AIRFLOW_SNOWFLAKE_IDENTITY entry.
 # shellcheck disable=SC2034  # read by stage scripts that source this file
 AIRFLOW_ENVIRONMENTS=(airflow airflow-staging)
 

@@ -39,7 +39,8 @@ declare -A AIRFLOW_SNOWFLAKE_IDENTITY=(
 )
 
 # Every Application the root app-of-apps (argocd/apps) is expected to bring
-# up. Kept as one list so "all healthy" and "count matches" can't drift.
+# up. Checked in both directions — every name here must go Synced+Healthy,
+# and report_unexpected_apps fails if argocd holds one that is not here.
 EXPECTED_APPS=(root argocd alb-controller airflow-storageclass connectors kafka-cluster kafka-connect strimzi-operator "${AIRFLOW_ENVIRONMENTS[@]}")
 
 CONNECT_POD="steam-infra-connect-0"
@@ -81,6 +82,24 @@ apps_synced_and_healthy() {
     [[ "$status" == "Synced" && "$health" == "Healthy" ]] || return 1
   done
   return 0
+}
+
+# The other direction: an Application the cluster has that EXPECTED_APPS does
+# not. apps_synced_and_healthy only ever looks at the names it is given, so
+# something added to argocd/apps and not to that list is never waited for and
+# bring-up reports success without it — which is exactly how a half-deployed
+# environment looks healthy. Reported once, after the wait, rather than as a
+# wait condition: root creates the Applications, so during the wait a name
+# can legitimately be present before this stage knows about it.
+report_unexpected_apps() {
+  local unexpected
+  unexpected=$(comm -13 <(printf '%s\n' "${EXPECTED_APPS[@]}" | sort) \
+    <(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+      | tr ' ' '\n' | grep -v '^$' | sort))
+  [[ -z "$unexpected" ]] && return 0
+  warn "Applications in argocd that this stage does not know about, so nothing waited for them: $(tr '\n' ' ' <<<"$unexpected")"
+  note "add them to EXPECTED_APPS in this file (Airflow environments belong in lib/env.sh's AIRFLOW_ENVIRONMENTS instead)."
+  return 1
 }
 
 nstep 1 "pointing kubectl at the EKS cluster..."
@@ -203,7 +222,9 @@ until apps_synced_and_healthy; do
   (( SECONDS < deadline )) || fail "not every Application reached Synced+Healthy in time: ${EXPECTED_APPS[*]}"
   sleep 15
 done
-ok "all ${#EXPECTED_APPS[@]} Applications Synced and Healthy"
+report_unexpected_apps \
+  || fail "every expected Application is Synced+Healthy, but argocd holds Applications this stage never checked — see above"
+ok "all ${#EXPECTED_APPS[@]} Applications Synced and Healthy, and no others exist"
 
 nsub "waiting for the Kafka cluster to be Ready..."
 deadline=$((SECONDS + 600))

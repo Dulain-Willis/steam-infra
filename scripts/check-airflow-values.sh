@@ -60,7 +60,8 @@ render() { helm template "$1" apache-airflow/airflow --version "$2" --namespace 
 
 status=0
 # Collected per environment for the cross-environment assertions at the end.
-orders=() schemes=() group_names=() chart_versions=()
+# `rules` holds "PATH ORDER ENV" so the overlap check can compare both.
+orders=() rules=() schemes=() group_names=() chart_versions=() releases=()
 
 for overlay in "$VALUES_DIR"/values-*.yaml; do
   case $(basename "$overlay") in values-image-*) continue ;; esac
@@ -83,12 +84,15 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
     echo "FAIL  $env_name: could not read name/namespace/chart version from $(basename "$app")"
     status=1; continue
   fi
-  chart_versions+=("$chart_version")
 
   if ! rendered=$(render "$release" "$chart_version" "$namespace" \
     -f "$VALUES_DIR/values.yaml" -f "$overlay" -f "$image"); then
     echo "FAIL  $env_name does not render"; status=1; continue
   fi
+  # Appended *after* the render, with the other three, so an environment that
+  # fails to render contributes to none of the cross-checks rather than one.
+  chart_versions+=("$chart_version")
+  releases+=("$release")
   echo "ok    $env_name renders as release $release in namespace $namespace (values.yaml + $(basename "$overlay") + $(basename "$image"))"
 
   # First Ingress document only -- a plain range pattern re-triggers per
@@ -102,7 +106,10 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
   # not a reason to abort under `set -e` having printed nothing.
   path=$(awk '/^ +path: \//{print $2; exit}' <<<"$ingress" || true)
   order=$(grep -oE 'group\.order: "?-?[0-9]+"?' <<<"$ingress" | head -1 || true)
+  # Bare integer for the comparisons below; the annotation renders quoted.
+  order_n=$(grep -oE 'group\.order: "?-?[0-9]+"?' <<<"$ingress" | head -1 | grep -oE '\-?[0-9]+' || true)
   orders+=("${order:-<none>}")
+  rules+=("${path:-<none>} ${order_n:-<none>} $env_name")
   schemes+=("$(grep -oE 'scheme: \S+' <<<"$ingress" | head -1 || true)")
   group_names+=("$(grep -oE 'group\.name: \S+' <<<"$ingress" | head -1 || true)")
   if [[ -z $ingress ]]; then
@@ -140,6 +147,35 @@ all_same() {
   fi
 }
 
+# prefix_orders_correct — for every ordered pair of rules where one path is a
+# `pathType: Prefix` prefix of the other, assert the longer path has the lower
+# group.order. Reads the "PATH ORDER ENV" rows in $rules.
+#
+# Pairwise rather than a sort, because only *overlapping* paths constrain each
+# other: /argocd and /airflow may be in any order, and demanding a global
+# longest-first ordering would reject a perfectly good configuration.
+prefix_orders_correct() {
+  local a b pa oa ea pb ob eb checked=0
+  for a in "${rules[@]}"; do
+    read -r pa oa ea <<<"$a"
+    for b in "${rules[@]}"; do
+      read -r pb ob eb <<<"$b"
+      # Only pairs where b's path extends a's, so each pair is seen once.
+      [[ $ea != "$eb" && $pb == "$pa"* && $pb != "$pa" ]] || continue
+      checked=$((checked + 1))
+      if [[ $oa == "<none>" || $ob == "<none>" ]]; then
+        echo "FAIL  $pa ($ea) and $pb ($eb) overlap but one has no group.order"; status=1
+      elif (( ob < oa )); then
+        echo "ok    $pb ($eb, order $ob) is evaluated before $pa ($ea, order $oa)"
+      else
+        echo "FAIL  $pa ($ea) has group.order $oa and $pb ($eb) has $ob -- $pa is a prefix of $pb and lower is evaluated first, so $ea's rule swallows every $pb request. $eb must take the lower order."
+        status=1
+      fi
+    done
+  done
+  (( checked )) || echo "ok    no two environments' paths overlap"
+}
+
 all_distinct() {
   local what="$1" distinct
   distinct=$(printf '%s\n' "${@:2}" | sort -u | wc -l | tr -d ' ')
@@ -157,19 +193,59 @@ if (( ${#orders[@]} > 1 )); then
   # asserts the render bears that out rather than trusting the file layout.
   all_same "the ALB scheme" "${schemes[@]}"
   all_same "the ALB group.name" "${group_names[@]}"
-  # /airflow is a prefix of /airflow-staging, so the rules overlap and the
-  # order decides which wins. Equal orders are resolved by a lexicographic
-  # namespace/name tie-break -- not something to leave two overlapping
-  # prefixes to.
+  # Equal orders are resolved by a lexicographic namespace/name tie-break --
+  # not something to leave two overlapping prefixes to.
   all_distinct "group.order" "${orders[@]}"
+  # And the assertion that actually matters. Distinctness is only a proxy: it
+  # passes just as happily with the orders the wrong way round, which is the
+  # failure the annotation exists to prevent (prod's /airflow rule matching
+  # every /airflow-staging request, so staging's URL serves prod's Airflow).
+  # The real invariant is that where one path is a prefix of another, the
+  # *longer* one must be evaluated first, i.e. carry the lower order.
+  prefix_orders_correct
   # Staging exists to be prod-like; two chart versions is two Airflows.
   all_same "the chart version" "${chart_versions[@]}"
+fi
+
+# The other direction of the k8s/airflow <-> lib/env.sh relationship. Above,
+# each overlay is required to have an Application; here, every environment
+# that renders is required to be in AIRFLOW_ENVIRONMENTS — which is what
+# bring-up walks to create the namespace and its Secrets, to populate
+# EXPECTED_APPS and to health-check the Deployments.
+#
+# Without this, an overlay + image file + Application added without touching
+# env.sh passes every check above, is skipped by all of bring-up, is never
+# waited for, and bring-up reports success while that environment's pods sit
+# in CreateContainerConfigError for want of Secrets nobody created.
+if (( ${#releases[@]} )); then
+  # shellcheck source=scripts/lib/env.sh
+  source "$REPO_ROOT/scripts/lib/env.sh"
+  undeclared=$(comm -23 <(printf '%s\n' "${releases[@]}" | sort) \
+    <(printf '%s\n' "${AIRFLOW_ENVIRONMENTS[@]}" | sort))
+  unbuilt=$(comm -13 <(printf '%s\n' "${releases[@]}" | sort) \
+    <(printf '%s\n' "${AIRFLOW_ENVIRONMENTS[@]}" | sort))
+  if [[ -z $undeclared && -z $unbuilt ]]; then
+    echo "ok    lib/env.sh's AIRFLOW_ENVIRONMENTS matches the Applications (${AIRFLOW_ENVIRONMENTS[*]})"
+  else
+    [[ -z $undeclared ]] || { echo "FAIL  deployed but not in lib/env.sh's AIRFLOW_ENVIRONMENTS, so bring-up creates no namespace or Secrets for it: $(tr '\n' ' ' <<<"$undeclared")"; status=1; }
+    [[ -z $unbuilt ]] || { echo "FAIL  in lib/env.sh's AIRFLOW_ENVIRONMENTS but has no values overlay or Application: $(tr '\n' ' ' <<<"$unbuilt")"; status=1; }
+  fi
 fi
 
 # Rendered into a variable first rather than piped straight into grep: with
 # `|| true` on the pipeline, a helm failure would leave $leaked empty and this
 # would report "leaks nothing" having rendered nothing at all.
-if ! base_render=$(render airflow "${chart_versions[0]:-}" airflow -f "$VALUES_DIR/values.yaml"); then
+# --- the base alone -------------------------------------------------------
+#
+# Rendered at the environments' pinned chart version. Guarded rather than
+# defaulted: `helm template --version ""` silently resolves the *newest* chart
+# in the repo, so an empty value here would mean reporting "the base leaks
+# nothing" about a chart nobody pinned.
+if (( ${#chart_versions[@]} == 0 )); then
+  echo "FAIL  no environment yielded a chart version, so the base cannot be rendered at the pinned one"
+  exit 1
+fi
+if ! base_render=$(render airflow "${chart_versions[0]}" airflow -f "$VALUES_DIR/values.yaml"); then
   echo "FAIL  base values alone do not render"
   exit 1
 fi

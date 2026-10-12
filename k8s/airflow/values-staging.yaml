@@ -2,13 +2,18 @@
 # that file's header for how the three values files fit together.
 #
 # Everything here is environment-specific, and this file is deliberately
-# values-prod.yaml with exactly six values changed: SNOWFLAKE_ROLE,
+# values-prod.yaml with exactly six *values* changed: SNOWFLAKE_ROLE,
 # SNOWFLAKE_DATABASE, DBT_TARGET, AIRFLOW__API__BASE_URL, the ingress path and
-# its group.order. `diff values-prod.yaml values-staging.yaml` should show
-# those six and nothing else -- everything else is byte-identical on purpose,
-# the secretKeyRef blocks included: the secret *names* are namespace-local and
-# the same in both namespaces, so only their contents differ
+# its group.order. Every other value is byte-identical on purpose, the
+# secretKeyRef blocks included: the secret *names* are namespace-local and the
+# same in both namespaces, so only their contents differ
 # (bringup/stages/05-cluster.sh creates them per namespace).
+#
+# Some *comments* differ too, where prod's wording would be wrong here, so
+# `diff values-prod.yaml values-staging.yaml` shows more than six hunks and is
+# not the drift check. The mechanical check is
+# `bash scripts/check-airflow-values.sh`, which renders both stacks and
+# compares what the cluster would actually get.
 #
 # The duplication is not a mistake to be factored out into the base: extraEnv
 # is one raw string, Helm replaces strings instead of merging them, and a base

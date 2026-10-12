@@ -195,28 +195,28 @@ WRITABLE=$(minus "$CORRECT_WRITABLE" "DEVELOPER|$DEV") \
 READABLE=$(minus "$CORRECT_READABLE" "DEVELOPER|$RAW") \
   run_scenario "DEVELOPER cannot read the landing schema: must be caught" fail
 
-# 13. TRANSFORMER_STAGING can write STEAM_PROD — #112 story 24, and the one
+# 12. TRANSFORMER_STAGING can write STEAM_PROD — #112 story 24, and the one
 #     boundary a promotion flow depends on: staging runs merged-but-unreviewed
 #     code, so this is the grant that stops a bad merge reaching prod's data.
 WRITABLE=$(plus "$CORRECT_WRITABLE" "TRANSFORMER_STAGING|$PROD") \
   run_scenario "TRANSFORMER_STAGING can write STEAM_PROD: must be caught" fail
 
-# 14. And the mirror: prod's role reaching into staging's database. Harmless to
+# 13. And the mirror: prod's role reaching into staging's database. Harmless to
 #     prod, but it means the two environments are not actually isolated.
 WRITABLE=$(plus "$CORRECT_WRITABLE" "TRANSFORMER_PROD|$STAGING") \
   run_scenario "TRANSFORMER_PROD can write STEAM_STAGING: must be caught" fail
 
-# 15. TRANSFORMER_STAGING cannot write its own database — staging's dbt run
+# 14. TRANSFORMER_STAGING cannot write its own database — staging's dbt run
 #     would fail, which a deny-only check would call a pass.
 WRITABLE=$(minus "$CORRECT_WRITABLE" "TRANSFORMER_STAGING|$STAGING") \
   run_scenario "TRANSFORMER_STAGING cannot write STEAM_STAGING: must be caught" fail
 
-# 16. TRANSFORMER_STAGING cannot read the landing tables — staging's stg layer
+# 15. TRANSFORMER_STAGING cannot read the landing tables — staging's stg layer
 #     reads them, and only the handoff check sees this (scenario 5's shape).
 READABLE=$(minus "$CORRECT_READABLE" "TRANSFORMER_STAGING|$RAW") \
   run_scenario "TRANSFORMER_STAGING cannot read the landing schema: must be caught" fail
 
-# 12. The operator's key is missing or empty. Unlike the tofu-generated keys,
+# 16. The operator's key is missing or empty. Unlike the tofu-generated keys,
 #     this one is a path from .env, so a wrong path or a key that was never
 #     created has to be caught at registration — an identity reached only by
 #     `deny` cases would otherwise record "could not authenticate" as
