@@ -62,4 +62,12 @@ variable "developers" {
     condition     = length(var.developers) > 0
     error_message = "At least one developer is needed: bring-up's grant check runs as the first entry."
   }
+
+  # The name is the key of the for_each in identities.tf, so two entries with
+  # the same name would silently collapse into one user — and the second
+  # person's key would be the one that counts.
+  validation {
+    condition     = length(distinct([for developer in var.developers : lower(developer.name)])) == length(var.developers)
+    error_message = "Developer names must be unique (case-insensitively): they name one Snowflake user each."
+  }
 }

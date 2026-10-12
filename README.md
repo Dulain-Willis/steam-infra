@@ -96,6 +96,10 @@ Not configurable via `.env` — same for every environment:
 
 Account-specific values that can't come from `.env` or `tofu output`:
 
+- The developers — the `developers` variable's default in
+  `terraform/snowflake/variables.tf`. It ships with this project's operator and
+  their RSA public key; replace the entry rather than adding to it, or the next
+  bring-up creates a Snowflake user for a stranger.
 - The ArgoCD repo URL — `repoURL` in `argocd/root.yaml` and every
   `argocd/apps/*.yaml`.
 - The ECR image URL — `image` in `k8s/kafka/connect/kafka-connect.yaml`.

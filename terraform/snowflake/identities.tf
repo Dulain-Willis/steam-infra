@@ -49,6 +49,22 @@ locals {
   # var.developers keyed by name, for the for_each'd user and role grant.
   developers = { for developer in var.developers : developer.name => developer }
 
+  # Roles that read the landing tables in STEAM_RAW. Every environment's dbt
+  # build does, with the same grants, so this is a list rather than a block
+  # per role — #116 adds CI, #119 TRANSFORMER_STAGING.
+  raw_readers = [
+    snowflake_account_role.transformer_prod.name,
+    snowflake_account_role.developer.name,
+  ]
+
+  # Which database each role builds into, same idea. #116 adds CI =>
+  # STEAM_DEV (two roles writing one database is fine), #119
+  # TRANSFORMER_STAGING => STEAM_STAGING.
+  build_databases = {
+    (snowflake_account_role.transformer_prod.name) = snowflake_database.prod.name
+    (snowflake_account_role.developer.name)        = snowflake_database.dev.name
+  }
+
   # One service user per non-human identity. Each gets exactly one role, a
   # tofu-generated key pair, and a pair of outputs (<key>_user,
   # <key>_private_key) for bring-up to copy into a Kubernetes Secret.
@@ -137,12 +153,17 @@ resource "snowflake_grant_privileges_to_account_role" "loader_raw_future_schemas
   }
 }
 
-# --- TRANSFORMER_PROD: read STEAM_RAW ---------------------------------------
+# --- Reading STEAM_RAW: TRANSFORMER_PROD and DEVELOPER ----------------------
+#
+# Every environment's dbt build reads the same landing tables, and the grant
+# set is identical for each, so the readers are a list — #116 adds CI, #119
+# TRANSFORMER_STAGING, and neither needs a new resource.
 #
 # Only TABLES, no VIEWS: STEAM_RAW holds nothing but sink-created tables.
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_database" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_database" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
 
   on_account_object {
@@ -151,8 +172,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_database" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_schemas" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
   depends_on        = [snowflake_schema.source_system]
 
@@ -161,8 +183,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_schemas" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_future_schemas" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["USAGE"]
 
   on_schema {
@@ -170,8 +193,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_schemas" 
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_tables" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_tables" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["SELECT"]
 
   on_schema_object {
@@ -182,8 +206,9 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_tables" {
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_tables" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "raw_reader_future_tables" {
+  for_each          = toset(local.raw_readers)
+  account_role_name = each.value
   privileges        = ["SELECT"]
 
   on_schema_object {
@@ -194,135 +219,45 @@ resource "snowflake_grant_privileges_to_account_role" "prod_raw_future_tables" {
   }
 }
 
-# --- TRANSFORMER_PROD: write STEAM_PROD -------------------------------------
+# --- Writing a build database: TRANSFORMER_PROD and DEVELOPER ---------------
 #
-# dbt creates the layer schemas (stg, int, marts_*, elementary) itself, so it
-# needs CREATE SCHEMA on the database; it owns what it creates. The schema-level
-# grants cover schemas it did not create, PUBLIC included.
+# dbt creates its own schemas — the layer schemas in STEAM_PROD, a developer's
+# dbt_<name>_* ones in STEAM_DEV — so CREATE SCHEMA on the database is the
+# load-bearing grant; it owns what it creates. The schema-level grants cover
+# schemas it did not create: PUBLIC, and in STEAM_DEV a teammate's.
+#
+# Developers deliberately share one role rather than getting one each: that
+# database is a shared sandbox, and the schema prefix, not a grant, is what
+# keeps two developers out of each other's tables.
 
-resource "snowflake_grant_privileges_to_account_role" "prod_database" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_database" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE SCHEMA"]
 
   on_account_object {
     object_type = "DATABASE"
-    object_name = snowflake_database.prod.name
+    object_name = each.value
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_schemas" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
 
   on_schema {
-    all_schemas_in_database = snowflake_database.prod.name
+    all_schemas_in_database = each.value
   }
 }
 
-resource "snowflake_grant_privileges_to_account_role" "prod_future_schemas" {
-  account_role_name = snowflake_account_role.transformer_prod.name
+resource "snowflake_grant_privileges_to_account_role" "build_future_schemas" {
+  for_each          = local.build_databases
+  account_role_name = each.key
   privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
 
   on_schema {
-    future_schemas_in_database = snowflake_database.prod.name
-  }
-}
-
-# --- DEVELOPER: read STEAM_RAW ----------------------------------------------
-#
-# The same five grants TRANSFORMER_PROD has: every dev build's stg layer reads
-# the landing tables, and `future` matters because the sink creates each table
-# on that topic's first record, which can be long after this apply.
-
-resource "snowflake_grant_privileges_to_account_role" "developer_raw_database" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE"]
-
-  on_account_object {
-    object_type = "DATABASE"
-    object_name = snowflake_database.raw.name
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_raw_schemas" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE"]
-  depends_on        = [snowflake_schema.source_system]
-
-  on_schema {
-    all_schemas_in_database = snowflake_database.raw.name
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_raw_future_schemas" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE"]
-
-  on_schema {
-    future_schemas_in_database = snowflake_database.raw.name
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_raw_tables" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["SELECT"]
-
-  on_schema_object {
-    all {
-      object_type_plural = "TABLES"
-      in_database        = snowflake_database.raw.name
-    }
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_raw_future_tables" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["SELECT"]
-
-  on_schema_object {
-    future {
-      object_type_plural = "TABLES"
-      in_database        = snowflake_database.raw.name
-    }
-  }
-}
-
-# --- DEVELOPER: write STEAM_DEV ---------------------------------------------
-#
-# Every developer creates their own dbt_<name>_* schemas on their first build,
-# so CREATE SCHEMA on the database is the load-bearing grant; they own what
-# they create. The schema-level grants cover schemas they did not create —
-# PUBLIC, and a teammate's.
-#
-# Developers deliberately share one role rather than getting one each: this is
-# a shared sandbox database, and the schema prefix, not a grant, is what keeps
-# two developers out of each other's tables.
-
-resource "snowflake_grant_privileges_to_account_role" "developer_dev_database" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE", "CREATE SCHEMA"]
-
-  on_account_object {
-    object_type = "DATABASE"
-    object_name = snowflake_database.dev.name
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_dev_schemas" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
-
-  on_schema {
-    all_schemas_in_database = snowflake_database.dev.name
-  }
-}
-
-resource "snowflake_grant_privileges_to_account_role" "developer_dev_future_schemas" {
-  account_role_name = snowflake_account_role.developer.name
-  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
-
-  on_schema {
-    future_schemas_in_database = snowflake_database.dev.name
+    future_schemas_in_database = each.value
   }
 }
 
