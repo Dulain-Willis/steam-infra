@@ -35,6 +35,27 @@ Takes everything back to $0 billable in AWS and Snowflake, and proves it.
 Same `--start-from`/`--stop-after` flags; same per-stage scripts in
 `teardown/stages/`.
 
+Deletion **order** is load-bearing (#122). Anything whose finalizer only a
+controller can release — Ingresses holding `ingress.k8s.aws/resources`, PVCs
+holding `kubernetes.io/pvc-protection` — is deleted and waited out while that
+controller is still running, after automated sync is turned off so ArgoCD
+doesn't self-heal the deletion. A timeout **escalates** (delete the AWS side
+by tag, then clear the stuck finalizer) rather than giving up, so an
+unattended run can recover; it only fails, loudly, if that doesn't reach zero
+either. Stages 2 and 5 also sweep the two kinds of resource that are not in
+tofu state and therefore survive `tofu destroy`: CSI-provisioned gp3 volumes,
+and the ALB controller's own security groups, which make `DeleteVpc` fail with
+`DependencyViolation`.
+
+All of that — including the failure paths a live teardown can never produce —
+is covered without a cluster by `lib/teardown_sweep_test.sh`, which stubs
+`kubectl`, `aws` and `tofu` and runs the real stage scripts against a model of
+the stack:
+
+```bash
+bash scripts/lib/teardown_sweep_test.sh
+```
+
 ## Promote to prod
 
 Two Airflow environments run in the cluster: **staging**, which every new
