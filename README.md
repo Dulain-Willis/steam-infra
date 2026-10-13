@@ -35,6 +35,39 @@ Takes everything back to $0 billable in AWS and Snowflake, and proves it.
 Same `--start-from`/`--stop-after` flags; same per-stage scripts in
 `teardown/stages/`.
 
+## Promote to prod
+
+Two Airflow environments run in the cluster: **staging**, which every new
+image lands in automatically, and **prod**, which only ever runs an image
+that has already run in staging.
+
+- A merge to steam-orchestration or steam-analytics builds an image and
+  steam-orchestration's `build-and-push.yml` writes its tag into
+  `k8s/airflow/values-image-staging.yaml`. ArgoCD rolls staging onto it.
+  **Nothing writes prod's tag automatically** — that is the design, not an
+  outage.
+- To put that image in prod, run the **Promote to prod** workflow
+  (`.github/workflows/promote-to-prod.yml`) from the Actions tab, or:
+  ```bash
+  gh workflow run promote-to-prod.yml                 # promote staging's current tag
+  gh workflow run promote-to-prod.yml -f tag=<TAG>    # roll prod back to an older tag
+  ```
+  It opens a PR whose only change is one line of
+  `k8s/airflow/values-image-prod.yaml`. **Merging that PR is the approval and
+  the deploy**: every ArgoCD Application tracks `main`, so prod syncs to that
+  exact image on merge, with nothing rebuilt and no step afterwards.
+- **Rollback is the same flow** with `tag` set to a tag prod or staging ran
+  before. The workflow refuses a tag that has never been in either image
+  file, so a typo cannot deploy an image nobody has run.
+- **The run goes red, and no PR appears, when prod already runs the tag.**
+  That is the expected outcome of promoting twice; the failure message says
+  so. A green run always means a PR was opened, so "no PR" always has a
+  reason in the run's log.
+
+The file edit, and every refusal, is `scripts/promote-to-prod.sh` — run it
+locally to see what a promotion would change. `bash
+scripts/promote-to-prod-test.sh` tests all of it against throwaway git repos.
+
 ## One-time setup
 
 1. A Snowflake account, with a user holding `ACCOUNTADMIN`. That is the
@@ -66,7 +99,25 @@ Same `--start-from`/`--stop-after` flags; same per-stage scripts in
    `CURRENT_ACCOUNT()` is *not* it — that returns the account locator, which
    does not resolve as part of an account identifier. Preflight fails if
    `SNOWFLAKE_ACCOUNT` isn't `<ORG>-<ACCOUNT>`, so the two can't drift.
-4. Install [`uv`](https://docs.astral.sh/uv/) — the only Python
+4. Allow Actions to open the promotion PR. Until this is set, the **Promote
+   to prod** workflow changes prod's tag and then fails at the PR step with
+   *"GitHub Actions is not permitted to create or approve pull requests"*:
+   ```bash
+   gh api --method PUT repos/Dulain-Willis/steam-infra/actions/permissions/workflow \
+     -F can_approve_pull_request_reviews=true
+   # check: gh api repos/Dulain-Willis/steam-infra/actions/permissions/workflow
+   ```
+   `can_approve_pull_request_reviews` is the field behind *Settings → Actions
+   → General → "Allow GitHub Actions to create and approve pull requests"*;
+   it is what gates **creating** a PR as well as approving one.
+   `default_workflow_permissions` can stay `read` — the workflow requests the
+   `contents: write` / `pull-requests: write` it needs in its own
+   `permissions:` block, so there is no reason to widen the default for every
+   workflow. This repo is in a user namespace, so if the call succeeds and
+   the workflow still cannot open a PR, check the same checkbox at the
+   **account** level (`Settings → Actions → General` on the user account),
+   which can override the repository setting.
+5. Install [`uv`](https://docs.astral.sh/uv/) — the only Python
    prerequisite; every Python script here runs through it, so the host's
    system Python is never touched. `tofu`, `aws`, `kubectl`, `helm`, `jq`,
    `psql`, `gh` and the SSM `session-manager-plugin` are also required;
@@ -144,7 +195,10 @@ Account-specific values that can't come from `.env` or `tofu output`:
   points at (Strimzi, Kafka, Kafka Connect, the connectors, Airflow).
 - `generator/` — the EC2-hosted event generator that ticks against RDS.
 - `scripts/` — the end-to-end smoke test, reused as bring-up's final
-  verify step.
+  verify step; the static Airflow-values check; and the promotion script
+  behind the promote-to-prod workflow, with its test.
+- `.github/workflows/` — the promote-to-prod workflow. The image *build*
+  lives in steam-orchestration, not here.
 - `db/schema.sql` — the full OLTP schema (no separate migrations — this
   file is always current).
 - `docs/` — ADRs and standalone runbooks/decision records.
