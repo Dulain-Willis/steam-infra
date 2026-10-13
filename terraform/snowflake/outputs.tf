@@ -54,3 +54,19 @@ output "prod_airflow_private_key" {
   value       = tls_private_key.service_user["prod_airflow"].private_key_pem_pkcs8
   sensitive   = true
 }
+
+# The CI identity. Unlike the three above, this pair does not go into a
+# Kubernetes Secret — bring-up's Stage 2 pushes it to steam-analytics' GitHub
+# secrets, because that is where CI runs. Same PKCS#8 form, for the same
+# reason: ci.yml writes it to a file and dbt-snowflake reads it as
+# private_key_path, and the other two workflows pass it as content.
+output "ci_user" {
+  description = "Service user steam-analytics' GitHub Actions workflows authenticate as"
+  value       = snowflake_service_user.this["ci"].name
+}
+
+output "ci_private_key" {
+  description = "PKCS#8 PEM private key for the CI service user"
+  value       = tls_private_key.service_user["ci"].private_key_pem_pkcs8
+  sensitive   = true
+}

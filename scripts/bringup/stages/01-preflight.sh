@@ -17,13 +17,16 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 stage 1 "Preflight"
 
 missing=()
-for bin in tofu aws kubectl helm uv jq psql session-manager-plugin; do
+for bin in tofu aws kubectl helm uv jq psql session-manager-plugin gh; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if (( ${#missing[@]} )); then
   fail "missing required tools: ${missing[*]}"
 fi
-ok "required tools present: tofu, aws, kubectl, helm, uv, jq, psql, session-manager-plugin"
+# gh is Stage 2's, for pushing the CI identity to steam-analytics' secrets
+# (#116). Checked here rather than there so a missing tool fails in preflight
+# rather than after a tofu apply.
+ok "required tools present: tofu, aws, kubectl, helm, uv, jq, psql, session-manager-plugin, gh"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   fail "AWS credentials not working (aws sts get-caller-identity failed) — configure your AWS profile/SSO session."

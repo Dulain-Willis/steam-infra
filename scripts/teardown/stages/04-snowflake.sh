@@ -6,6 +6,17 @@
 #
 # Nothing in this root module survives a teardown (unlike the AWS root, which
 # keeps the tfstate bucket), so this is a plain destroy with no exclusions.
+#
+# That includes the CI role and service user, which Stage 6 proves are gone:
+# `CI` is in lib/env.sh's SNOWFLAKE_PROJECT_ROLES and `STEAM_CI_SVC` matches
+# its SNOWFLAKE_PROJECT_USER_PATTERN.
+#
+# The CI credentials bring-up pushed to steam-analytics' Actions secrets are
+# deliberately *not* deleted. Destroying the service user is what revokes
+# them — the key now authenticates to nothing — and the next bring-up
+# overwrites all three. Deleting them would only change the failure between
+# sessions from "authentication failed" to "no such secret", and both are a
+# red workflow either way.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
