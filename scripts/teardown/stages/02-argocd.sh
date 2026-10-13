@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # Stage 2: delete the ArgoCD Applications so Kubernetes-created AWS
-# resources (PVC-backed EBS volumes, any load balancers) are actually gone
-# on the AWS side before Stage 5's `tofu destroy` — otherwise they're
-# orphaned (nothing in Terraform state references them, and the cluster
-# that would delete them is gone) and can block VPC deletion.
+# resources (PVC-backed EBS volumes, the admin ALB and the security groups
+# the ALB controller made for it) are actually gone on the AWS side before
+# Stage 5's `tofu destroy` — otherwise they're orphaned (nothing in Terraform
+# state references them) and the security groups block DeleteVpc outright.
+#
+# Order is the whole point of this stage, and getting it wrong is #122:
+# anything whose finalizer only a controller can release must be deleted, and
+# *waited out*, while that controller is still running. So Ingresses go first
+# and their ALB has to be gone before the cascade is allowed to take
+# alb-controller with it. Everything destructive here lives in
+# lib/teardown_sweep.sh, which says what bounds each action and is covered by
+# lib/teardown_sweep_test.sh without a cluster.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -11,6 +19,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 source "$REPO_ROOT/scripts/lib/output.sh"
 # shellcheck source=scripts/lib/env.sh
 source "$REPO_ROOT/scripts/lib/env.sh"
+# shellcheck source=scripts/lib/teardown_sweep.sh
+source "$REPO_ROOT/scripts/lib/teardown_sweep.sh"
 
 stage 2 "ArgoCD Applications"
 
@@ -33,105 +43,133 @@ ok "stopped (or wasn't running)"
 # Helm release (the controller doing this deleting), so giving it the
 # finalizer too risks the controller killing itself mid-cascade before it
 # finishes the others. Its PVC-free resources still die with the EKS
-# cluster in Stage 5 regardless -- except its own Ingress (#107), which
-# needs its ALB deleted explicitly; see below.
+# cluster in Stage 5 regardless -- except its own Ingress (#107), which is
+# deleted by drain_albs below along with Airflow's.
 #
 # The Airflow environments come from lib/env.sh's AIRFLOW_ENVIRONMENTS rather
 # than being spelled out: an environment missing from this list gets no
 # cascade finalizer, so root's delete removes its Application object without
-# ArgoCD tearing down the Helm release underneath it — its Ingress rule
-# survives, and step 7 then spins until the 10-minute `albs_left` timeout.
+# ArgoCD tearing down the Helm release underneath it.
 CASCADE_APPS=(root "${AIRFLOW_ENVIRONMENTS[@]}" connectors kafka-cluster kafka-connect strimzi-operator)
 
 nstep 2 "checking whether the cluster still exists..."
-if ! aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
-  skip "no EKS cluster '$EKS_CLUSTER_NAME' — nothing to delete"
-fi
-
-nstep 3 "pointing kubectl at the cluster..."
-aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
-
-if ! kubectl get application root -n argocd >/dev/null 2>&1; then
-  say "no root Application — already deleted; still verifying PVCs/load balancers are gone."
+if aws eks describe-cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+  CLUSTER_UP=true
+  ok "cluster '$EKS_CLUSTER_NAME' is up"
 else
-  nstep 4 "patching the cascade finalizer onto each Application..."
-  for app in "${CASCADE_APPS[@]}"; do
-    kubectl get application "$app" -n argocd >/dev/null 2>&1 || continue
-    kubectl patch application "$app" -n argocd --type merge \
-      -p '{"metadata":{"finalizers":["resources-finalizer.argocd.argoproj.io"]}}' >/dev/null
-  done
-
-  nstep 5 "deleting root (cascades to the rest)..."
-  kubectl delete application root -n argocd --wait=false --ignore-not-found >/dev/null
-
-  # Best-effort, not awaited: see the CASCADE_APPS comment above.
-  kubectl patch application argocd -n argocd --type merge \
-    -p '{"metadata":{"finalizers":["resources-finalizer.argocd.argoproj.io"]}}' >/dev/null 2>&1 || true
-  kubectl delete application argocd -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
-
-  # "argocd"'s own Ingress (#107) is the one resource of its that the
-  # CASCADE_APPS comment above no longer covers: that reasoning predates
-  # #107 and only holds for PVC/LB-free resources. Its ALB otherwise has
-  # nothing left to delete it once alb-controller dies with the cluster in
-  # Stage 5 -- found by actually hitting this on a live teardown, not
-  # from reading the chart. Delete it directly, bypassing ArgoCD (which
-  # won't touch "argocd"'s own resources without the finalizer above).
-  kubectl delete ingress argocd-server -n argocd --ignore-not-found >/dev/null 2>&1 || true
+  CLUSTER_UP=false
+  # Not a `skip`: the sweeps at the end of this stage are pure AWS calls and
+  # are exactly what is still needed when the cluster is already gone but its
+  # ALB security groups and CSI volumes are not (#122's recovery path).
+  warn "no EKS cluster '$EKS_CLUSTER_NAME' — skipping the Kubernetes steps, still sweeping AWS"
 fi
 
-# StatefulSet-managed PVCs (airflow's postgresql/redis charts use
-# volumeClaimTemplates) are never part of what ArgoCD applied — they're
-# created by the StatefulSet controller, so pruning the Application never
-# deletes them. Delete them directly; the ebs-csi-default storage class has
-# reclaimPolicy: Delete, so this is what actually removes the EBS volumes.
-nstep 6 "deleting PVCs the cascade above doesn't own..."
-mapfile -t leftover_pvcs < <(kubectl get pvc -A --no-headers 2>/dev/null | awk '{print $1, $2}')
-for entry in "${leftover_pvcs[@]+"${leftover_pvcs[@]}"}"; do
-  read -r ns name <<<"$entry"
-  kubectl delete pvc "$name" -n "$ns" --wait=false >/dev/null
-done
+if [[ "$CLUSTER_UP" == true ]]; then
+  nstep 3 "pointing kubectl at the cluster..."
+  aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION" >/dev/null
 
-nstep 7 "waiting for Applications, PVCs, and load balancers to be gone..."
-# The PVC object disappearing from the Kubernetes API only means deletion was
-# requested — the ebs-csi driver's actual DeleteVolume call against AWS is
-# async and can still be in flight. If Stage 5's tofu destroy kills the
-# cluster (and the csi-controller pod with it) before that call lands, the
-# EBS volume is orphaned forever with nothing left to delete it. So wait on
-# the AWS side too, not just the PVC object being gone.
-#
-# The admin ALB (#107) isn't a Service type=LoadBalancer object — it's
-# created by the AWS Load Balancer Controller from Ingress objects, so
-# lbs_left above never catches it. Checked separately via describe-load-
-# balancers directly (account-wide, like Stage 6's final $0 verify — this
-# account is dedicated to the project), same deadline, same reasoning: once
-# Stage 5 destroys the cluster (and alb-controller's pod with it), nothing
-# is left to ever delete this ALB if it isn't gone by then.
-deadline=$((SECONDS + 600))
-while (( SECONDS < deadline )); do
-  apps_left=0
-  for app in "${CASCADE_APPS[@]}"; do
-    kubectl get application "$app" -n argocd >/dev/null 2>&1 && apps_left=$((apps_left + 1))
-  done
-  pvcs_left=$(kubectl get pvc -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  lbs_left=$(kubectl get svc -A -o json 2>/dev/null | jq '[.items[] | select(.spec.type=="LoadBalancer")] | length')
-  ebs_vols_left=$(aws ec2 describe-volumes --region "$AWS_REGION" \
-    --filters "Name=tag:KubernetesCluster,Values=$EKS_CLUSTER_NAME" "Name=status,Values=available,creating,in-use,deleting" \
-    --query 'length(Volumes)' --output text 2>/dev/null || echo 1)
-  albs_left=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
-    --query 'length(LoadBalancers)' --output text 2>/dev/null || echo 1)
-  if (( apps_left == 0 && pvcs_left == 0 && lbs_left == 0 && ebs_vols_left == 0 && albs_left == 0 )); then
-    ok "Applications, PVCs, load balancers, and EBS volumes all gone"
-    exit 0
+  # Must come before anything is deleted: every Application has
+  # selfHeal: true, so ArgoCD would recreate a deleted Ingress within seconds
+  # and the ALB with it.
+  nstep 4 "disabling automated sync so deletions aren't self-healed..."
+  freeze_argocd_sync
+
+  # #122. The ingress.k8s.aws/resources finalizer on an Ingress can only be
+  # removed by alb-controller, and alb-controller goes away with the cascade
+  # below. Delete the Ingresses and get their ALB gone first, while the
+  # controller is still there to do it.
+  nstep 5 "deleting Ingresses and draining their ALB (alb-controller still running)..."
+  drain_albs
+
+  # Requested before the cascade, satisfied by it: the pods have to release
+  # the volumes before the CSI driver can delete them.
+  nstep 6 "requesting deletion of every PVC (StatefulSet volumes ArgoCD never owned)..."
+  request_pvc_deletion
+  ok "deletion requested"
+
+  if ! kubectl get application root -n argocd >/dev/null 2>&1; then
+    say "no root Application — already deleted; still verifying the rest is gone."
+  else
+    nstep 7 "patching the cascade finalizer onto each Application..."
+    for app in "${CASCADE_APPS[@]}"; do
+      kubectl get application "$app" -n argocd >/dev/null 2>&1 || continue
+      kubectl patch application "$app" -n argocd --type merge \
+        -p '{"metadata":{"finalizers":["resources-finalizer.argocd.argoproj.io"]}}' >/dev/null
+    done
+    ok "finalizer patched onto the cascade"
+
+    nstep 8 "deleting root (cascades to the rest)..."
+    kubectl delete application root -n argocd --wait=false --ignore-not-found >/dev/null
+
+    # Best-effort, not awaited: see the CASCADE_APPS comment above.
+    kubectl patch application argocd -n argocd --type merge \
+      -p '{"metadata":{"finalizers":["resources-finalizer.argocd.argoproj.io"]}}' >/dev/null 2>&1 || true
+    kubectl delete application argocd -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
+    ok "root deleted"
   fi
-  sleep 10
-done
 
-warn "timed out after 10m waiting for cleanup. Remaining state:"
-kubectl get applications -n argocd 2>&1 >&2 || true
-kubectl get pvc -A 2>&1 >&2 || true
-kubectl get svc -A 2>&1 >&2 || true
-aws ec2 describe-volumes --region "$AWS_REGION" \
-  --filters "Name=tag:KubernetesCluster,Values=$EKS_CLUSTER_NAME" "Name=status,Values=available,creating,in-use,deleting" \
-  2>&1 >&2 || true
-aws elbv2 describe-load-balancers --region "$AWS_REGION" 2>&1 >&2 || true
-fail "ArgoCD cascade delete did not finish in time"
+  nstep 9 "waiting for Applications, PVCs and their EBS volumes to be gone..."
+  # The PVC object disappearing from the Kubernetes API only means deletion was
+  # requested — the ebs-csi driver's actual DeleteVolume call against AWS is
+  # async and can still be in flight. If Stage 5's tofu destroy kills the
+  # cluster (and the csi-controller pod with it) before that call lands, the
+  # EBS volume is orphaned with nothing left to delete it, so wait on the AWS
+  # side too, not just the PVC object being gone.
+  cleanup_remaining() {
+    local apps_left=0 app
+    for app in "${CASCADE_APPS[@]}"; do
+      kubectl get application "$app" -n argocd >/dev/null 2>&1 && apps_left=$((apps_left + 1))
+    done
+    local pvcs_left lbs_left
+    pvcs_left=$(kubectl get pvc -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    lbs_left=$(kubectl get svc -A -o json 2>/dev/null | jq '[.items[] | select(.spec.type=="LoadBalancer")] | length' 2>/dev/null || echo 0)
+    echo $(( apps_left + pvcs_left + lbs_left + $(cluster_volumes_count) + $(albs_present) ))
+  }
+
+  if wait_until "$TEARDOWN_CLEANUP_TIMEOUT" cleanup_remaining; then
+    ok "Applications, PVCs, load balancers and EBS volumes all gone"
+  else
+    # #122's expensive lesson: the dead-man's switch fired, called teardown.sh,
+    # hit this timeout, reported honestly, and could not fix it. A timeout now
+    # escalates — delete the AWS side directly (tag-bounded), then release the
+    # finalizers that are holding the Kubernetes objects open — and only fails
+    # if that does not reach zero either.
+    warn "timed out after ${TEARDOWN_CLEANUP_TIMEOUT}s — escalating (see #122). Remaining state:"
+    kubectl get applications -n argocd >&2 2>&1 || true
+    kubectl get pvc -A >&2 2>&1 || true
+
+    delete_project_load_balancers
+
+    while read -r ns name; do
+      [[ -n "$name" ]] || continue
+      clear_finalizers persistentvolumeclaim "$name" "$ns"
+      kubectl delete pvc "$name" -n "$ns" --wait=false >/dev/null 2>&1 || true
+    done < <(kubectl get pvc -A --no-headers 2>/dev/null | awk '{print $1, $2}')
+
+    for app in "${CASCADE_APPS[@]}"; do
+      kubectl get application "$app" -n argocd >/dev/null 2>&1 || continue
+      clear_finalizers application "$app" argocd
+      kubectl delete application "$app" -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
+    done
+
+    # After the finalizers, not before: releasing a stuck pvc-protection is
+    # what detaches the volume, and only a detached one is `available` and so
+    # deletable.
+    sweep_orphan_volumes
+
+    wait_until "$TEARDOWN_ESCALATED_TIMEOUT" cleanup_remaining \
+      || fail "cleanup did not finish even after clearing finalizers — MANUAL CHECK REQUIRED, the stack may still be billing"
+    ok "cleanup finished after escalating"
+  fi
+fi
+
+# Neither of these is in tofu state, so `tofu destroy` leaves both behind
+# (#122). The security groups are the blocking one: DeleteVpc fails with
+# DependencyViolation while they exist. Volumes are swept again in Stage 5
+# after the destroy, because a volume still attached to a node now becomes
+# `available` only once that node is terminated.
+nstep 10 "sweeping the alb-controller security groups (they block DeleteVpc)..."
+sweep_alb_controller_security_groups
+
+nstep 11 "sweeping CSI-provisioned EBS volumes tofu destroy does not own..."
+sweep_orphan_volumes
