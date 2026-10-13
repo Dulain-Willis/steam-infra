@@ -1,5 +1,24 @@
 # steam-infra
 
+## Single-tenant AWS account
+
+This project owns its AWS account outright. Nothing else runs in it, in any
+region. Two things depend on that and would be unsafe without it:
+
+- **Teardown's `$0` verify** (`scripts/teardown/stages/06-verify.sh`) checks
+  account-wide in the project region rather than matching tags, so it also
+  catches resources Kubernetes created that Terraform never knew about —
+  dynamically provisioned EBS volumes in particular.
+- **Teardown's orphan sweeps** (`scripts/lib/teardown_sweep.sh`) identify
+  CSI-provisioned EBS volumes by the PVC namespace the driver tags them with,
+  not by cluster: there is no cluster-identifying tag on them to use. A second
+  EKS cluster in this region with an `airflow` or `kafka` namespace would be
+  in scope of that sweep.
+
+Both files cite this section. If the account ever stops being single-tenant,
+they are the two places to revisit — and `cluster_volumes`' `ponytail:` note
+records the proper fix (set `--k8s-tag-cluster-id` on the CSI addon).
+
 ## Glossary
 
 **Application** — an ArgoCD custom resource (`argoproj.io/v1alpha1

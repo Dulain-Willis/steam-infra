@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stage 6: prove $0 — nothing billable left in AWS or Snowflake. This AWS
-# account is dedicated to this project (see CLAUDE.md/CONTEXT.md), so an
+# account is single-tenant (CONTEXT.md, "Single-tenant AWS account"), so an
 # account-wide check in the project region is simpler than tag-matching and
 # also catches anything Kubernetes created that Terraform never knew about
 # (dynamically-provisioned EBS volumes, in particular).

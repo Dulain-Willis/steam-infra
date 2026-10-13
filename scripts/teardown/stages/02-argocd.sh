@@ -120,9 +120,14 @@ if [[ "$CLUSTER_UP" == true ]]; then
     for app in "${CASCADE_APPS[@]}"; do
       kubectl get application "$app" -n argocd >/dev/null 2>&1 && apps_left=$((apps_left + 1))
     done
-    local pvcs_left lbs_left
-    pvcs_left=$(kubectl get pvc -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
-    lbs_left=$(kubectl get svc -A -o json 2>/dev/null | jq '[.items[] | select(.spec.type=="LoadBalancer")] | length' 2>/dev/null || echo 0)
+    # A listing that *failed* must count as 1, not 0: "could not tell" reading
+    # as "clean" is how this loop would exit successfully over a live stack.
+    local pvcs_left lbs_left out
+    out=$(kubectl get pvc -A --no-headers --ignore-not-found) \
+      && pvcs_left=$(grep -c . <<<"$out" || true) || pvcs_left=1
+    out=$(kubectl get svc -A -o json) \
+      && lbs_left=$(jq '[.items[] | select(.spec.type=="LoadBalancer")] | length' <<<"$out" 2>/dev/null || echo 1) \
+      || lbs_left=1
     echo $(( apps_left + pvcs_left + lbs_left + $(cluster_volumes_count) + $(albs_present) ))
   }
 
@@ -144,7 +149,7 @@ if [[ "$CLUSTER_UP" == true ]]; then
       [[ -n "$name" ]] || continue
       clear_finalizers persistentvolumeclaim "$name" "$ns"
       kubectl delete pvc "$name" -n "$ns" --wait=false >/dev/null 2>&1 || true
-    done < <(kubectl get pvc -A --no-headers 2>/dev/null | awk '{print $1, $2}')
+    done < <(kubectl get pvc -A --no-headers --ignore-not-found | awk '{print $1, $2}')
 
     for app in "${CASCADE_APPS[@]}"; do
       kubectl get application "$app" -n argocd >/dev/null 2>&1 || continue
