@@ -97,7 +97,15 @@ run "$dir"
 check "exit 1" 1 "$status"
 check_matches "names the tag and says prod is in sync" "prod already runs $NEW_TAG" "$out"
 check_matches "says no PR was opened, so 'no PR' is not ambiguous" 'No PR was opened and nothing is wrong' "$out"
+check_matches "says why: it is staging's current tag" "staging's current tag, so prod and staging are already in sync" "$out"
 check "the tree is untouched" "" "$(git -C "$dir" status --porcelain)"
+
+# The same refusal reached by an explicit tag must NOT claim the environments
+# are in sync -- staging may be somewhere else entirely.
+run "$dir" "$NEW_TAG"
+check "exit 1" 1 "$status"
+check_matches "explicit no-op refuses too" "prod already runs $NEW_TAG" "$out"
+check "explicit no-op does not claim staging is in sync" "" "$(grep -o 'in sync' <<<"$out")"
 
 # --- 3. rollback: an explicit older tag ------------------------------------
 nstep 3 "an explicit older tag: an equivalent rollback, found in history"

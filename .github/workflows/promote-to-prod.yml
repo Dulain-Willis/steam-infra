@@ -81,9 +81,7 @@ jobs:
       - name: Fail if no PR was opened
         if: steps.pr.outputs.pull-request-number == ''
         run: |
-          echo "::error::the tag was changed but no PR was opened -- check that \
-          'Allow GitHub Actions to create and approve pull requests' is enabled \
-          on this repository (README.md, One-time setup)."
+          echo "::error::the tag was changed but no PR was opened. Check that 'Allow GitHub Actions to create and approve pull requests' is enabled on this repository -- see README.md, One-time setup."
           exit 1
 
       - name: Summary

@@ -72,6 +72,7 @@ prod_tag=$(tag_of "$PROD")
 
 if [[ -n "$requested" ]]; then
   tag=$requested
+  noop_because="promoting it would change nothing"
   [[ "$tag" =~ $TAG_RE ]] || fail "'$tag' is not a valid image tag."
   # Collected into a variable, not piped into `grep -q`: grep -q exits on the
   # first match and SIGPIPEs the pipeline, which `pipefail` then reports as a
@@ -81,7 +82,7 @@ if [[ -n "$requested" ]]; then
     fail "$(printf 'tag %s has never been in either image file, so it was never deployed here. Known tags:\n       %s' \
       "$tag" "${known//$'\n'/$'\n'       }")"
   fi
-  if git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null | grep -qx true; then
+  if [[ $(git -C "$REPO_ROOT" rev-parse --is-shallow-repository 2>/dev/null) == true ]]; then
     warn "shallow clone: the known-tag check only saw the history that was fetched. Use fetch-depth: 0."
   fi
   note "promoting an explicitly requested tag (rollback or re-promotion), not staging's current one"
@@ -90,13 +91,14 @@ else
   tag=$(tag_of "$STAGING")
   [[ -n "$tag" ]] || fail "$STAGING_REL has no 'defaultAirflowTag:' value. Staging's image bot writes that key; a missing one means the bot failed, not that there is nothing to promote."
   [[ "$tag" =~ $TAG_RE ]] || fail "staging's tag '$tag' is not a valid image tag. Promoting it would produce a prod values file that cannot pull an image."
+  noop_because="that is staging's current tag, so prod and staging are already in sync"
 fi
 
 # The no-op. Distinguishing "already promoted" from "the workflow broke" is the
 # whole point of failing here instead of letting the PR action produce nothing:
 # an empty PR and no PR look identical to whoever clicked Run (steam-infra#119).
 if [[ "$tag" == "$prod_tag" ]]; then
-  fail "prod already runs $tag, so this promotion would change nothing. No PR was opened and nothing is wrong -- prod and staging are in sync. To redeploy the same tag, sync the prod Application in ArgoCD instead."
+  fail "prod already runs $tag, and $noop_because. No PR was opened and nothing is wrong. To redeploy the same tag, sync the prod Application in ArgoCD instead."
 fi
 
 set_tag "$PROD" "$tag" || fail "$PROD_REL does not have exactly one 'defaultAirflowTag:' line, so which one prod runs is ambiguous. Fix the file by hand."
