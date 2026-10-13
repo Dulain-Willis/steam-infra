@@ -186,7 +186,8 @@ delete_project_load_balancers() {
     aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$arn" \
       >/dev/null 2>&1 || warn "could not delete $arn"
   done
-  # After the load balancer, or the target groups are still attached.
+  # Target groups go after the load balancer; while it exists they are still
+  # attached to its listener and DeleteTargetGroup is refused.
   for arn in $(project_elb_arns targetgroup); do
     nbullet "deleting target group $arn"
     aws elbv2 delete-target-group --region "$AWS_REGION" --target-group-arn "$arn" \
