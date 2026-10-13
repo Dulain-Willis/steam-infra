@@ -33,7 +33,7 @@ mkdir -p "$BIN"
 #   cluster      up | gone
 #   controller   alive | dead        -- is alb-controller still running
 #   ingresses    <ns> <name>
-#   albs         <arn>               -- all tagged elbv2.k8s.aws/cluster=steam-infra
+#   albs         <arn> tagged|foreign   -- foreign = not this cluster's
 #   targetgroups <arn>
 #   volumes      <id> <status> csi|legacy|none
 #   sgs          <id> <name> <vpc> tagged|untagged
@@ -148,7 +148,9 @@ case "$verb:$kind" in
       # The controller sees the deletion, tears down the ALB and its target
       # groups, and only then releases ingress.k8s.aws/resources.
       drop_line ingresses 2 "$name"
-      : >"$STATE/albs"; : >"$STATE/targetgroups"
+      # The controller only ever removes what it created.
+      awk '$2 != "tagged"' "$STATE/albs" >"$STATE/albs.tmp" && mv "$STATE/albs.tmp" "$STATE/albs"
+      awk '$2 != "tagged"' "$STATE/targetgroups" >"$STATE/targetgroups.tmp" && mv "$STATE/targetgroups.tmp" "$STATE/targetgroups"
     fi
     # Controller gone: the object stays, finalizer unreleased, ALB intact.
     ;;
@@ -217,8 +219,11 @@ case "$svc:$op" in
     drop_line targetgroups 1 "$(argval --target-group-arn "$@")" ;;
 
   resourcegroupstaggingapi:get-resources)
-    if anyarg 'elasticloadbalancing:loadbalancer' "$@"; then cat "$STATE/albs"
-    else cat "$STATE/targetgroups"; fi ;;
+    if anyarg 'elasticloadbalancing:loadbalancer' "$@"; then
+      awk '$2 == "tagged" { print $1 }' "$STATE/albs"
+    else
+      awk '$2 == "tagged" { print $1 }' "$STATE/targetgroups"
+    fi ;;
 
   ec2:describe-volumes)
     want="$(argval "Name=status,Values" "$@" || true)"
@@ -337,8 +342,8 @@ airflow airflow-ingress
 airflow-staging airflow-staging-ingress
 argocd argocd-server
 EOF
-  printf 'arn:aws:elasticloadbalancing:::loadbalancer/app/k8s-steaminfraadmin/abc\n' >"$STATE/albs"
-  printf 'arn:aws:elasticloadbalancing:::targetgroup/k8s-airflow/def\n' >"$STATE/targetgroups"
+  printf 'arn:aws:elasticloadbalancing:::loadbalancer/app/k8s-steaminfraadmin/abc tagged\n' >"$STATE/albs"
+  printf 'arn:aws:elasticloadbalancing:::targetgroup/k8s-airflow/def tagged\n' >"$STATE/targetgroups"
   cat >"$STATE/volumes" <<'EOF'
 vol-airflow-logs in-use csi
 vol-airflow-redis in-use csi
@@ -555,7 +560,7 @@ check "the unrelated SG's rule was not revoked" yes \
 scenario "10. escalation cannot delete the ALB: must fail honestly, never claim \$0"
 new_state
 printf 'dead\n' >"$STATE/controller"
-cat "$STATE/albs" >"$STATE/undeletable"
+awk '{ print $1 }' "$STATE/albs" >"$STATE/undeletable"
 run_stage 02-argocd
 check "stage 2 exits 1" 1 $?
 check "says the stack may still be billing" yes \
@@ -587,6 +592,22 @@ check "root's automated sync was disabled before any Ingress was deleted" yes \
 for app in argocd alb-controller airflow airflow-staging connectors; do
   check "  $app was frozen too" yes "$(logged "patch application.argoproj.io/$app")"
 done
+
+# ---------------------------------------------------------------------------
+# 13. Q7.4, flagged before any of this happened: the ALB wait is account-wide,
+#     so an ALB belonging to something else in the region stalls it. The
+#     escalation must NOT delete that one, and must say why it stopped.
+# ---------------------------------------------------------------------------
+scenario "13. an ALB this stack does not own: never deleted, named in the failure"
+new_state
+printf 'arn:aws:elasticloadbalancing:::loadbalancer/app/someone-elses/999 foreign\n' >>"$STATE/albs"
+run_stage 02-argocd
+check "stage 2 fails" 1 $?
+check "the foreign ALB is untouched" yes \
+  "$(grep -qF someone-elses "$STATE/albs" && echo yes || echo no)"
+check "nothing was deleted by ARN" no "$(logged 'elbv2 delete-load-balancer')"
+check "and the failure names the missing tag" yes \
+  "$(grep -qF 'elbv2.k8s.aws/cluster=steam-infra' "$STATE/out" && echo yes || echo no)"
 
 if ((failures)); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2

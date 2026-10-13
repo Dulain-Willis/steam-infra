@@ -244,6 +244,14 @@ drain_albs() {
   fi
 
   warn "load balancers still present after ${TEARDOWN_DRAIN_TIMEOUT}s — escalating (see #122)"
+  # Q7.4: the wait above is account-wide, deliberately — a mis-tagged ALB of
+  # ours is the expensive thing to miss. The cost is that an ALB belonging to
+  # something *else* in this region stalls it forever, and the escalation
+  # cannot delete that one (it is tag-bounded, and must stay that way). Say so
+  # by name rather than failing as if the fix had not worked.
+  if [[ -z "$(project_elb_arns loadbalancer)" ]]; then
+    fail "load balancers remain in $AWS_REGION but none are tagged elbv2.k8s.aws/cluster=$EKS_CLUSTER_NAME, so they are not this stack's and teardown will not delete them — MANUAL CHECK REQUIRED"
+  fi
   delete_project_load_balancers
   while read -r ns name; do
     [[ -n "$name" ]] || continue
