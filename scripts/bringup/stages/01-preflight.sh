@@ -33,6 +33,17 @@ if ! aws sts get-caller-identity >/dev/null 2>&1; then
 fi
 ok "AWS credentials OK"
 
+# Checked here for the same reason as the AWS credentials, and it matters more
+# than it looks: Stage 2's apply regenerates the CI service user's key pair
+# *before* it pushes it. An unauthenticated `gh` therefore leaves
+# steam-analytics' three secrets holding a key the account no longer has — all
+# three of its workflows red, with nothing having asked for a change. A
+# brew-installed `gh` with no `gh auth login` passes `command -v`.
+if ! gh auth status >/dev/null 2>&1; then
+  fail "gh is not authenticated (gh auth status failed) — run 'gh auth login'. Stage 2 pushes the CI identity's rotated credentials to $ANALYTICS_REPO's Actions secrets, which needs a token with repo scope on it."
+fi
+ok "gh authenticated"
+
 env_complete || fail ".env incomplete"
 ok ".env complete, key file present"
 
