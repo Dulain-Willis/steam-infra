@@ -139,7 +139,6 @@ if [[ "$CLUSTER_UP" == true ]]; then
     kubectl get pvc -A >&2 2>&1 || true
 
     delete_project_load_balancers
-    sweep_orphan_volumes
 
     while read -r ns name; do
       [[ -n "$name" ]] || continue
@@ -152,6 +151,11 @@ if [[ "$CLUSTER_UP" == true ]]; then
       clear_finalizers application "$app" argocd
       kubectl delete application "$app" -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
     done
+
+    # After the finalizers, not before: releasing a stuck pvc-protection is
+    # what detaches the volume, and only a detached one is `available` and so
+    # deletable.
+    sweep_orphan_volumes
 
     wait_until "$TEARDOWN_ESCALATED_TIMEOUT" cleanup_remaining \
       || fail "cleanup did not finish even after clearing finalizers — MANUAL CHECK REQUIRED, the stack may still be billing"
