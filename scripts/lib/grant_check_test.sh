@@ -39,13 +39,19 @@ sf_output() {
   esac
 }
 
+# VIEW as well as TABLE in the keyword alternation: grant_handoff_check probes
+# both kinds where the reader has to read both (CI on STEAM_PROD). The stub
+# models grants per database.schema and not per object type, so the kinds are
+# only plumbing here — "the VIEWS half of a grant is missing" is a scenario the
+# live Stage 2 catches and this file cannot, which is the honest division:
+# modelling object types would mean a second grant matrix for one scenario.
 sf_query() {
   local sql="$1" role="$3" target allowed
   [[ -s "$SNOWFLAKE_PRIVATE_KEY_PATH" ]] || {
     echo "could not deserialize private key"
     return 1
   }
-  target=$(sed -E 's/.*(TABLE|FROM) (IF EXISTS )?([A-Z_]+\.[A-Z_]+)\..*/\3/' <<<"$sql")
+  target=$(sed -E 's/.*(TABLE|VIEW|FROM) (IF EXISTS )?([A-Z_]+\.[A-Z_]+)\..*/\3/' <<<"$sql")
   if [[ "$sql" == SELECT* ]]; then allowed="$READABLE"; else allowed="$WRITABLE"; fi
   [[ " $allowed " == *" $role|$target "* ]] && return 0
   echo "002003 (42S02): SQL compilation error: Object does not exist, or operation cannot be performed."
@@ -74,10 +80,18 @@ CASES=(
   "developer       DEVELOPER           $STAGING deny"
   "developer       DEVELOPER           $PROD    deny"
   "developer       DEVELOPER           $RAW     deny"
+  "ci              CI                  $DEV     allow"
+  "ci              CI                  $STAGING deny"
+  "ci              CI                  $PROD    deny"
+  "ci              CI                  $RAW     deny"
 )
 
-CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_STAGING|$STAGING TRANSFORMER_PROD|$PROD DEVELOPER|$DEV"
-CORRECT_READABLE="LOADER|$RAW TRANSFORMER_STAGING|$RAW TRANSFORMER_PROD|$RAW DEVELOPER|$RAW"
+# CI|$PROD appears in READABLE and not in WRITABLE, which is the whole of
+# #112's Q1: CI is the only role that reads a build database it must not
+# write. The stub keeps reads and writes separate precisely so that a correct
+# configuration like this one is not called broken.
+CORRECT_WRITABLE="LOADER|$RAW TRANSFORMER_STAGING|$STAGING TRANSFORMER_PROD|$PROD DEVELOPER|$DEV CI|$DEV"
+CORRECT_READABLE="LOADER|$RAW TRANSFORMER_STAGING|$RAW TRANSFORMER_PROD|$RAW DEVELOPER|$RAW CI|$RAW CI|$PROD"
 
 # Every failure scenario below states what it *changes* about the correct
 # matrix instead of respelling it. A respelt matrix also drops every role a
@@ -127,7 +141,14 @@ run_scenario() {
         && grant_isolation_check "${cases[@]}" \
         && grant_handoff_check loader LOADER staging_airflow TRANSFORMER_STAGING "$RAW" \
         && grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW" \
-        && grant_handoff_check loader LOADER developer DEVELOPER "$RAW"
+        && grant_handoff_check loader LOADER developer DEVELOPER "$RAW" \
+        && grant_handoff_check loader LOADER ci CI "$RAW" \
+        && grant_handoff_check prod_airflow TRANSFORMER_PROD ci CI "$PROD" TABLE VIEW \
+        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING ci CI "$STAGING" \
+        && grant_read_deny_check prod_airflow TRANSFORMER_PROD developer DEVELOPER "$PROD" \
+        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING developer DEVELOPER "$STAGING" \
+        && grant_read_deny_check prod_airflow TRANSFORMER_PROD staging_airflow TRANSFORMER_STAGING "$PROD" \
+        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING prod_airflow TRANSFORMER_PROD "$STAGING"
       grant_check_cleanup
     } 2>&1
   )
@@ -236,6 +257,62 @@ check_registration_fails() {
 }
 check_registration_fails "empty local key file: must be rejected" "$EMPTY_KEY_FILE"
 check_registration_fails "missing local key file: must be rejected" "/nonexistent/operator.p8"
+
+# 17. CI can write STEAM_PROD. CI *reads* prod for slim-CI deferral, so this is
+#     the one role where a read grant sits next to a write denial on the same
+#     database — the easiest pair to collapse into "just grant it everything"
+#     while every other scenario here still passes.
+WRITABLE=$(plus "$CORRECT_WRITABLE" "CI|$PROD") \
+  run_scenario "CI can write STEAM_PROD: must be caught" fail
+
+# 18. CI can write STEAM_STAGING, which it has no grant of any kind on: a PR's
+#     build must not be able to reach the environment merged code runs in.
+WRITABLE=$(plus "$CORRECT_WRITABLE" "CI|$STAGING") \
+  run_scenario "CI can write STEAM_STAGING: must be caught" fail
+
+# 19. CI can write the landing database. Same shape as DEVELOPER's: the read
+#     grant on STEAM_RAW must not arrive with a write.
+WRITABLE=$(plus "$CORRECT_WRITABLE" "CI|$RAW") \
+  run_scenario "CI can write STEAM_RAW: must be caught" fail
+
+# 20. CI cannot write STEAM_DEV — every CI schema lives there, so a PR's build
+#     would fail outright, and a deny-only check would call that a pass.
+WRITABLE=$(minus "$CORRECT_WRITABLE" "CI|$DEV") \
+  run_scenario "CI cannot write STEAM_DEV: must be caught" fail
+
+# 21. CI cannot *read* STEAM_PROD. Invisible to every write probe above — the
+#     deny row on prod passes either way — so only the handoff check sees it.
+#     The live symptom is a slim CI build failing with "Object does not exist"
+#     on a model the PR never touched, which reads as a dbt bug rather than a
+#     missing grant.
+READABLE=$(minus "$CORRECT_READABLE" "CI|$PROD") \
+  run_scenario "CI cannot read STEAM_PROD: must be caught" fail
+
+# 22. CI cannot read the landing tables. A slim build's stg layer still selects
+#     from the sources — only unselected refs defer, and a source is never a
+#     ref — so this grant is needed even when nothing upstream is rebuilt.
+READABLE=$(minus "$CORRECT_READABLE" "CI|$RAW") \
+  run_scenario "CI cannot read the landing schema: must be caught" fail
+
+# 23. CI can *read* STEAM_STAGING. The grant it must not have at all, and the
+#     one a write probe cannot see: every GRANT_CASES row still passes, both
+#     handoff checks still pass, and a slim CI build would never notice either.
+#     A single token in one of identities.tf's near-identical grant blocks —
+#     staging's database name where prod's belongs — produces exactly this.
+READABLE=$(plus "$CORRECT_READABLE" "CI|$STAGING") \
+  run_scenario "CI can read STEAM_STAGING: must be caught" fail
+
+# 24. DEVELOPER can read STEAM_PROD. #112's Q1 turns on DEVELOPER *not* having
+#     this while CI does, so the two live next to each other and the mistake is
+#     granting the read to both.
+READABLE=$(plus "$CORRECT_READABLE" "DEVELOPER|$PROD") \
+  run_scenario "DEVELOPER can read STEAM_PROD: must be caught" fail
+
+# 25. And the transformers reading each other's database — "staging and prod
+#     are isolated" in the read direction, which until now was asserted only of
+#     writes.
+READABLE=$(plus "$CORRECT_READABLE" "TRANSFORMER_STAGING|$PROD") \
+  run_scenario "TRANSFORMER_STAGING can read STEAM_PROD: must be caught" fail
 
 if ((failures)); then
   printf '\n%d scenario(s) behaved wrongly\n' "$failures" >&2

@@ -17,18 +17,32 @@ source "$REPO_ROOT/scripts/lib/env.sh"
 stage 1 "Preflight"
 
 missing=()
-for bin in tofu aws kubectl helm uv jq psql session-manager-plugin; do
+for bin in tofu aws kubectl helm uv jq psql session-manager-plugin gh; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if (( ${#missing[@]} )); then
   fail "missing required tools: ${missing[*]}"
 fi
-ok "required tools present: tofu, aws, kubectl, helm, uv, jq, psql, session-manager-plugin"
+# gh is Stage 2's, for pushing the CI identity to steam-analytics' secrets
+# (#116). Checked here rather than there so a missing tool fails in preflight
+# rather than after a tofu apply.
+ok "required tools present: tofu, aws, kubectl, helm, uv, jq, psql, session-manager-plugin, gh"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   fail "AWS credentials not working (aws sts get-caller-identity failed) — configure your AWS profile/SSO session."
 fi
 ok "AWS credentials OK"
+
+# Checked here for the same reason as the AWS credentials, and it matters more
+# than it looks: Stage 2's apply regenerates the CI service user's key pair
+# *before* it pushes it. An unauthenticated `gh` therefore leaves
+# steam-analytics' three secrets holding a key the account no longer has — all
+# three of its workflows red, with nothing having asked for a change. A
+# brew-installed `gh` with no `gh auth login` passes `command -v`.
+if ! gh auth status >/dev/null 2>&1; then
+  fail "gh is not authenticated (gh auth status failed) — run 'gh auth login'. Stage 2 pushes the CI identity's rotated credentials to $ANALYTICS_REPO's Actions secrets, which needs a token with repo scope on it."
+fi
+ok "gh authenticated"
 
 env_complete || fail ".env incomplete"
 ok ".env complete, key file present"

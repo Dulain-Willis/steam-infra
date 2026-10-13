@@ -3,22 +3,31 @@
 # rotate on every bring-up and never exist outside tofu state and the
 # Kubernetes Secrets bring-up copies them into (#112 story 39).
 #
-# | Role                | Reads     | Writes        |
-# |---------------------|-----------|---------------|
-# | LOADER              | —         | STEAM_RAW     |
-# | TRANSFORMER_STAGING | STEAM_RAW | STEAM_STAGING |
-# | TRANSFORMER_PROD    | STEAM_RAW | STEAM_PROD    |
-# | DEVELOPER           | STEAM_RAW | STEAM_DEV     |
+# | Role                | Reads                  | Writes        |
+# |---------------------|------------------------|---------------|
+# | LOADER              | —                      | STEAM_RAW     |
+# | TRANSFORMER_STAGING | STEAM_RAW              | STEAM_STAGING |
+# | TRANSFORMER_PROD    | STEAM_RAW              | STEAM_PROD    |
+# | DEVELOPER           | STEAM_RAW              | STEAM_DEV     |
+# | CI                  | STEAM_RAW, STEAM_PROD  | STEAM_DEV     |
 #
 # Each transformer writes exactly one build database and has no grant at all
 # on the other's, which is what makes "a bad staging run cannot damage prod"
 # (#112 story 24) provable by bring-up's grant check rather than asserted.
 #
-# DEVELOPER has no grant whatsoever on STEAM_PROD, not even read: only the CI
-# identity (#116) needs prod read, for slim-CI deferral, and a developer
-# running dbt does a full build into their own schemas with no --defer. That
-# absence is what makes "a dev build changes nothing in STEAM_PROD" provable
-# by bring-up's grant check rather than asserted (#112's Q1).
+# DEVELOPER has no grant whatsoever on STEAM_PROD, not even read, and CI does
+# have one — that asymmetry is the whole of #112's Q1. Slim CI runs
+# `dbt build --select state:modified+ --defer`, which resolves an unselected
+# ref() to the relation the prod-state manifest records, so the identity
+# running CI must be able to SELECT STEAM_PROD. A developer runs a full build
+# into their own schemas with no --defer and needs no such read, and not
+# granting it is what makes "a dev build changes nothing in STEAM_PROD"
+# provable by bring-up's grant check rather than asserted.
+#
+# CI is the only role that *reads a build database it must not write*. Both
+# halves are checked, and by different means: the write denial is a row in
+# bring-up's GRANT_CASES table, which only ever probes writes, and the read is
+# a separate grant_handoff_check (TRANSFORMER_PROD writes, CI reads).
 #
 # Nothing in the pipeline runs as ACCOUNTADMIN any more. Tofu's own provider
 # identity still does, because something has to create roles and users at
@@ -43,13 +52,13 @@ locals {
   # The account's only warehouse.
   warehouse = "COMPUTE_WH"
 
-  # Every role that runs SQL needs USAGE on it. Add roles here as later
-  # tickets add them (#116 CI).
+  # Every role that runs SQL needs USAGE on it.
   compute_roles = [
     snowflake_account_role.loader.name,
     snowflake_account_role.transformer_staging.name,
     snowflake_account_role.transformer_prod.name,
     snowflake_account_role.developer.name,
+    snowflake_account_role.ci.name,
   ]
 
   # var.developers keyed by name, for the for_each'd user and role grant.
@@ -57,19 +66,23 @@ locals {
 
   # Roles that read the landing tables in STEAM_RAW. Every environment's dbt
   # build does, with the same grants, so this is a list rather than a block
-  # per role — #116 adds CI and needs no new resource.
+  # per role. CI is in it because a slim build's stg layer still selects from
+  # the sources: only *unselected* refs defer, and a source is never a ref.
   raw_readers = [
     snowflake_account_role.transformer_staging.name,
     snowflake_account_role.transformer_prod.name,
     snowflake_account_role.developer.name,
+    snowflake_account_role.ci.name,
   ]
 
-  # Which database each role builds into, same idea. #116 adds CI =>
-  # STEAM_DEV (two roles writing one database is fine).
+  # Which database each role builds into, same idea. DEVELOPER and CI both
+  # write STEAM_DEV: two roles on one database is fine, because what keeps a
+  # developer's schemas and a PR's apart is the schema prefix, not a grant.
   build_databases = {
     (snowflake_account_role.transformer_staging.name) = snowflake_database.staging.name
     (snowflake_account_role.transformer_prod.name)    = snowflake_database.prod.name
     (snowflake_account_role.developer.name)           = snowflake_database.dev.name
+    (snowflake_account_role.ci.name)                  = snowflake_database.dev.name
   }
 
   # One service user per non-human identity. Each gets exactly one role, a
@@ -90,6 +103,19 @@ locals {
       name    = "STEAM_PROD_SVC"
       role    = snowflake_account_role.transformer_prod.name
       comment = "prod Airflow — runs dbt into STEAM_PROD"
+    }
+    # The only one of these whose key leaves the cluster: bring-up pushes it
+    # to steam-analytics' GitHub secrets (Stage 2), because GitHub Actions is
+    # where CI runs. Giving CI its own identity is what keeps the prod and
+    # staging keys out of GitHub entirely (#112's Q2) — before this, CI ran as
+    # whatever identity the SNOWFLAKE_* secrets happened to name.
+    #
+    # The STEAM_ prefix is load-bearing: lib/env.sh matches project users by
+    # STEAM\_%, so teardown proves this user is gone with no second signal.
+    ci = {
+      name    = "STEAM_CI_SVC"
+      role    = snowflake_account_role.ci.name
+      comment = "steam-analytics GitHub Actions — dbt into STEAM_DEV CI schemas, reads STEAM_PROD for slim-CI deferral"
     }
   }
 }
@@ -112,6 +138,11 @@ resource "snowflake_account_role" "transformer_prod" {
 resource "snowflake_account_role" "developer" {
   name    = "DEVELOPER"
   comment = "reads STEAM_RAW, writes only STEAM_DEV; no grant on STEAM_STAGING or STEAM_PROD"
+}
+
+resource "snowflake_account_role" "ci" {
+  name    = "CI"
+  comment = "reads STEAM_RAW and STEAM_PROD, writes only STEAM_DEV; no grant on STEAM_STAGING"
 }
 
 resource "snowflake_grant_privileges_to_account_role" "warehouse" {
@@ -276,6 +307,81 @@ resource "snowflake_grant_privileges_to_account_role" "build_future_schemas" {
 
   on_schema {
     future_schemas_in_database = each.value
+  }
+}
+
+# --- CI: read STEAM_PROD, for slim-CI deferral -------------------------------
+#
+# The one grant with no existing list to join, because CI is the only role that
+# reads a build database it does not write (#112's Q1/Q2). Everything else here
+# either writes the database it reads or reads only STEAM_RAW.
+#
+# VIEWS as well as TABLES, and that is not belt-and-braces: the stg and int
+# layers are materialized as views, so a tables-only grant would let slim CI
+# defer to a mart and fail on anything upstream of one. Each is a separate
+# `object_type_plural`, hence the for_each over the pair rather than two
+# near-identical blocks.
+#
+# No depends_on here, unlike the STEAM_RAW reads: nothing in this module
+# creates a schema in STEAM_PROD, so there is no apply-time race between an
+# `all` grant and a schema's creation. Every schema CI reads is made by prod's
+# dbt long after the apply, which is what the `future` grants are for — the
+# `all` ones cover PUBLIC and, on a re-apply, whatever dbt has built since.
+#
+# There is deliberately no equivalent block for STEAM_STAGING: CI has no grant
+# of any kind on it, and bring-up's deny row proves that.
+
+resource "snowflake_grant_privileges_to_account_role" "ci_prod_database" {
+  account_role_name = snowflake_account_role.ci.name
+  privileges        = ["USAGE"]
+
+  on_account_object {
+    object_type = "DATABASE"
+    object_name = snowflake_database.prod.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "ci_prod_schemas" {
+  account_role_name = snowflake_account_role.ci.name
+  privileges        = ["USAGE"]
+
+  on_schema {
+    all_schemas_in_database = snowflake_database.prod.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "ci_prod_future_schemas" {
+  account_role_name = snowflake_account_role.ci.name
+  privileges        = ["USAGE"]
+
+  on_schema {
+    future_schemas_in_database = snowflake_database.prod.name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "ci_prod_objects" {
+  for_each          = toset(["TABLES", "VIEWS"])
+  account_role_name = snowflake_account_role.ci.name
+  privileges        = ["SELECT"]
+
+  on_schema_object {
+    all {
+      object_type_plural = each.value
+      in_database        = snowflake_database.prod.name
+    }
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "ci_prod_future_objects" {
+  for_each          = toset(["TABLES", "VIEWS"])
+  account_role_name = snowflake_account_role.ci.name
+  privileges        = ["SELECT"]
+
+  on_schema_object {
+    future {
+      object_type_plural = each.value
+      in_database        = snowflake_database.prod.name
+    }
   }
 }
 
