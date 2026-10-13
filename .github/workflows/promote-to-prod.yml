@@ -1,0 +1,96 @@
+# Promote staging's image into prod, as a PR. Merging the PR is the approval:
+# ArgoCD's prod Application tracks `targetRevision: main`, so the merge is the
+# deploy and there is no step after it. Nothing is rebuilt -- prod ends up
+# running the exact image that has been running in staging (#112 story 31).
+#
+# Rollback is the same flow: dispatch with `tag` set to an older one.
+#
+# Needs "Allow GitHub Actions to create and approve pull requests" on the
+# repository -- see README.md, "One-time setup".
+name: Promote to prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to promote. Leave blank to promote staging's current tag; set it to roll prod back to an older tag."
+        required: false
+        default: ""
+
+# Two promotions at once would open two PRs editing the same line, and the
+# second would read a prod tag the first has already changed. Queue them.
+# Never cancel: a dispatch is a human asking for a specific promotion.
+concurrency:
+  group: promote-to-prod
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the one-line change to a branch
+      pull-requests: write # open the PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: promote-to-prod.sh will only promote a tag that has
+          # actually been in one of the image files, and with the default
+          # depth of 1 it would see no history and refuse every rollback.
+          fetch-depth: 0
+
+      # Every refusal (already promoted, unknown tag, malformed tag, missing
+      # file) happens here, before any branch or PR exists, and the job goes
+      # red with the reason. So a green run always means a PR, and "no PR
+      # appeared" always has an explanation in this step's log.
+      - name: Set prod's image tag
+        id: promote
+        env:
+          TAG: ${{ inputs.tag }}
+        run: bash scripts/promote-to-prod.sh "$TAG"
+
+      - name: Open the promotion PR
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # The one path, so the PR cannot pick up anything else the job left
+          # in the working tree.
+          add-paths: k8s/airflow/values-image-prod.yaml
+          branch: promote/prod-${{ steps.promote.outputs.promoted_tag }}
+          delete-branch: true
+          commit-message: "Promote ${{ steps.promote.outputs.promoted_tag }} to prod"
+          title: "Promote ${{ steps.promote.outputs.promoted_tag }} to prod"
+          body: |
+            Sets prod's image tag to `${{ steps.promote.outputs.promoted_tag }}`
+            (was `${{ steps.promote.outputs.previous_tag }}`).
+
+            ${{ steps.promote.outputs.tag_detail }}
+
+            The only change is one line of `k8s/airflow/values-image-prod.yaml`.
+            This image is already running in staging; nothing is rebuilt.
+
+            **Merging this PR is the deploy.** ArgoCD's prod Application tracks
+            `main`, so it syncs prod to this tag on merge with no further step.
+            To undo, dispatch this workflow again with `tag` set to the previous
+            one.
+
+            Opened by [Promote to prod](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+      # create-pull-request silently produces no PR when it finds no change,
+      # and a run that promoted something but opened nothing is the one
+      # outcome an operator cannot diagnose from the Actions list. Make it red.
+      - name: Fail if no PR was opened
+        if: steps.pr.outputs.pull-request-number == ''
+        run: |
+          echo "::error::the tag was changed but no PR was opened. Check that 'Allow GitHub Actions to create and approve pull requests' is enabled on this repository -- see README.md, One-time setup."
+          exit 1
+
+      - name: Summary
+        run: |
+          {
+            echo "### Promotion PR opened"
+            echo
+            echo "- tag: \`${{ steps.promote.outputs.promoted_tag }}\` (was \`${{ steps.promote.outputs.previous_tag }}\`)"
+            echo "- PR: ${{ steps.pr.outputs.pull-request-url }}"
+            echo
+            echo "Merging it deploys prod. Nothing else to do."
+          } >>"$GITHUB_STEP_SUMMARY"
