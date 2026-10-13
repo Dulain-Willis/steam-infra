@@ -35,7 +35,7 @@ mkdir -p "$BIN"
 #   ingresses    <ns> <name>
 #   albs         <arn> tagged|foreign   -- foreign = not this cluster's
 #   targetgroups <arn>
-#   volumes      <id> <status> csi|legacy|none
+#   volumes      <id> <status> <pvc-namespace>|legacy|none
 #   sgs          <id> <name> <vpc> tagged|untagged
 #   sgrules      <ruleid> <owner-sg> <egress> <referenced-sg>
 #   apps         <name> none|cascade auto|frozen   -- auto = selfHeal: true
@@ -48,6 +48,23 @@ mkdir -p "$BIN"
 cat >"$BIN/fakelib.sh" <<'FAKELIB'
 STATE="$FAKE_STATE"
 log() { printf '%s\n' "$*" >>"$STATE/log"; }
+# inject_failure: $STATE/fail holds one substring per line; any stub whose argv
+# contains one exits 1 with a plausible API error. This is how the suite
+# reaches the "the listing itself failed" paths -- transient API errors and
+# RBAC denials -- which are not otherwise reachable and are the shape of the
+# HIGH finding in review: a lister that swallowed its own failure and reported
+# an empty result as success.
+inject_failure() {
+  local pat
+  while read -r pat; do
+    [[ -n "${pat:-}" ]] || continue
+    case " $* " in
+      *"$pat"*)
+        echo "Error from server (Forbidden): injected failure for '$pat'" >&2
+        exit 1 ;;
+    esac
+  done <"$STATE/fail"
+}
 argval() {
   local want="$1"; shift
   while (($#)); do
@@ -118,6 +135,7 @@ cat >"$BIN/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
 source "$(dirname "$0")/fakelib.sh"
 log "kubectl $*"
+inject_failure "$@"
 selfheal
 verb="$1"; kind="${2:-}"; shift 2 2>/dev/null || true
 ns="$(argval -n "$@" || true)"
@@ -138,6 +156,11 @@ case "$verb:$kind" in
       printf '%s\n' "$name"
     elif [[ "$(argval -o "$@" || true)" == name ]]; then
       awk '{ print "application.argoproj.io/" $1 }' "$STATE/apps"
+    elif [[ "$(argval -o "$@" || true)" == jsonpath=* ]]; then
+      # freeze_argocd_sync's post-condition: name=<automated> per Application.
+      # A frozen one renders empty after the "="; one still carrying
+      # spec.syncPolicy.automated renders the map, as kubectl would.
+      awk '{ printf "%s=%s\n", $1, ($3 == "auto" ? "map[prune:true selfHeal:true]" : "") }' "$STATE/apps"
     else
       cut -d' ' -f1 "$STATE/apps"
     fi ;;
@@ -199,6 +222,7 @@ cat >"$BIN/aws" <<'AWSSTUB'
 #!/usr/bin/env bash
 source "$(dirname "$0")/fakelib.sh"
 log "aws $*"
+inject_failure "$@"
 selfheal
 svc="$1"; op="$2"; shift 2
 
@@ -232,12 +256,19 @@ case "$svc:$op" in
     for a in "$@"; do
       [[ "$a" == Name=status,Values=* ]] && want="${a#*Values=}"
       [[ "$a" == Name=tag:KubernetesCluster,* ]] && kind=legacy
-      [[ "$a" == Name=tag-key,Values=CSIVolumeName ]] && kind=csi
+      [[ "$a" == Name=tag:kubernetes.io/created-for/pvc/namespace,Values=* ]] \
+        && kind="${a#*Values=}"
     done
     while read -r id st tag; do
       [[ -n "${id:-}" ]] || continue
       statuses_match "$want" "$st" || continue
-      [[ "$tag" == "$kind" ]] || continue
+      # legacy matches exactly; the CSI filter matches if the volume's PVC
+      # namespace is one of the comma-separated values asked for.
+      if [[ "$kind" == legacy ]]; then
+        [[ "$tag" == legacy ]] || continue
+      else
+        [[ ",$kind," == *",$tag,"* ]] || continue
+      fi
       printf '%s\n' "$id"
     done <"$STATE/volumes" ;;
   ec2:delete-volume)
@@ -345,10 +376,10 @@ EOF
   printf 'arn:aws:elasticloadbalancing:::loadbalancer/app/k8s-steaminfraadmin/abc tagged\n' >"$STATE/albs"
   printf 'arn:aws:elasticloadbalancing:::targetgroup/k8s-airflow/def tagged\n' >"$STATE/targetgroups"
   cat >"$STATE/volumes" <<'EOF'
-vol-airflow-logs in-use csi
-vol-airflow-redis in-use csi
-vol-staging-logs in-use csi
-vol-staging-redis in-use csi
+vol-airflow-logs in-use airflow
+vol-airflow-redis in-use airflow
+vol-staging-logs in-use airflow-staging
+vol-staging-redis in-use airflow-staging
 EOF
   cat >"$STATE/sgs" <<'EOF'
 sg-frontend k8s-steaminfraadmin-1a2b vpc-steam tagged
@@ -389,6 +420,7 @@ EOF
   cp "$STATE/targetgroups" "$STATE/targetgroups.desired"
   printf 'vpc-steam steam-infra\n' >"$STATE/vpcs"
   : >"$STATE/undeletable"
+  : >"$STATE/fail"
   : >"$STATE/log"
 }
 
@@ -502,10 +534,10 @@ new_state
 printf 'gone\n' >"$STATE/cluster"      # cluster already destroyed
 : >"$STATE/ingresses"; : >"$STATE/albs"; : >"$STATE/targetgroups"; : >"$STATE/pvcs"; : >"$STATE/apps"
 cat >"$STATE/volumes" <<'EOF'
-vol-orphan-1 available csi
-vol-orphan-2 available csi
-vol-orphan-3 available csi
-vol-orphan-4 available csi
+vol-orphan-1 available airflow
+vol-orphan-2 available airflow
+vol-orphan-3 available airflow-staging
+vol-orphan-4 available kafka
 EOF
 run_stage 05-tofu-destroy; check "stage 5 exits 0" 0 $?
 check "all four orphaned volumes deleted" 0 "$(count volumes)"
@@ -586,12 +618,17 @@ check "and the ALB is back" 1 "$(count albs)"
 
 scenario "12. the stage freezes automated sync before deleting anything"
 new_state
+cp "$STATE/apps" "$STATE/apps.at-start"
 run_stage 02-argocd; check "stage 2 exits 0" 0 $?
+check "the fake stack really has ten Applications" 10 "$(count apps.at-start)"
 check "root's automated sync was disabled before any Ingress was deleted" yes \
   "$(before 'patch application.argoproj.io/root' 'delete ingress')"
-for app in argocd alb-controller airflow airflow-staging connectors; do
-  check "  $app was frozen too" yes "$(logged "patch application.argoproj.io/$app")"
-done
+# Every Application in the fake stack, not a sample: this is the invariant the
+# review was asked to scrutinise hardest, and sampling six of ten is how an
+# incomplete check looks right.
+while read -r app _rest; do
+  check "  $app was frozen" yes "$(logged "patch application.argoproj.io/$app")"
+done <"$STATE/apps.at-start"
 
 # ---------------------------------------------------------------------------
 # 13. Q7.4, flagged before any of this happened: the ALB wait is account-wide,
@@ -608,6 +645,81 @@ check "the foreign ALB is untouched" yes \
 check "nothing was deleted by ARN" no "$(logged 'elbv2 delete-load-balancer')"
 check "and the failure names the missing tag" yes \
   "$(grep -qF 'elbv2.k8s.aws/cluster=steam-infra' "$STATE/out" && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+# 14-18. Review findings. Every lister in teardown_sweep.sh used to swallow its
+#        own failure and return an empty result, which an `ok` then reported as
+#        success. The HIGH was freeze_argocd_sync doing it in the one function
+#        whose silent failure reopens #122. These scenarios reach those paths
+#        by injecting API errors, which is the only way to reach them at all.
+# ---------------------------------------------------------------------------
+scenario "14. the Applications listing fails: must stop, not freeze nothing and carry on"
+new_state
+printf 'get applications\n' >"$STATE/fail"
+run_stage 02-argocd
+check "stage 2 fails" 1 $?
+check "it says it is refusing to delete anything" yes \
+  "$(grep -qF 'refusing to delete anything while selfHeal may still be live' "$STATE/out" && echo yes || echo no)"
+check "it did NOT report a successful freeze" no \
+  "$(grep -qF 'automated sync disabled' "$STATE/out" && echo yes || echo no)"
+# The actual damage the old code did: it went on to delete Ingresses with
+# selfHeal live, so ArgoCD recreated them and the ALB never drained.
+check "no Ingress was deleted" no "$(logged 'delete ingress')"
+check "root was never deleted" no "$(logged 'delete application root')"
+check "all three Ingresses are still there" 3 "$(count ingresses)"
+
+scenario "15. the patches fail silently: the post-condition must catch it"
+new_state
+# get works, patch does not -- RBAC on patch only. A count of what was patched
+# would have been 10 and reported success; only re-reading the state catches it.
+printf 'patch application\n' >"$STATE/fail"
+run_stage 02-argocd
+check "stage 2 fails" 1 $?
+check "it names the Applications still syncing" yes \
+  "$(grep -qF 'automated sync is still enabled on:' "$STATE/out" && echo yes || echo no)"
+check "no Ingress was deleted" no "$(logged 'delete ingress')"
+
+scenario "16. describe-security-groups fails: must not report the sweep clean"
+new_state
+printf 'gone\n' >"$STATE/cluster"
+: >"$STATE/ingresses"; : >"$STATE/albs"; : >"$STATE/targetgroups"; : >"$STATE/pvcs"; : >"$STATE/apps"; : >"$STATE/volumes"
+printf 'describe-security-groups\n' >"$STATE/fail"
+run_stage 05-tofu-destroy
+check "stage 5 fails" 1 $?
+check "it does not claim there are none left" no \
+  "$(grep -qF 'no alb-controller security groups left' "$STATE/out" && echo yes || echo no)"
+check "and it says DeleteVpc would fail" yes \
+  "$(grep -qF 'DeleteVpc would then fail' "$STATE/out" && echo yes || echo no)"
+# `tofu state list` does run, in step 1; the destroy must not.
+check "tofu destroy never ran" no "$(logged 'destroy -auto-approve')"
+
+scenario "17. describe-volumes fails: must not report no orphaned volumes"
+new_state
+printf 'gone\n' >"$STATE/cluster"
+: >"$STATE/ingresses"; : >"$STATE/albs"; : >"$STATE/targetgroups"; : >"$STATE/pvcs"; : >"$STATE/apps"
+printf 'describe-volumes\n' >"$STATE/fail"
+run_stage 05-tofu-destroy
+check "stage 5 fails" 1 $?
+check "it does not claim there are no orphans" no \
+  "$(grep -qF 'no orphaned CSI volumes' "$STATE/out" && echo yes || echo no)"
+check "the volumes are still there to be dealt with" 4 "$(count volumes)"
+
+scenario "18. the CSI volume filter is scoped to this stack's PVC namespaces"
+new_state
+printf 'gone\n' >"$STATE/cluster"
+: >"$STATE/ingresses"; : >"$STATE/albs"; : >"$STATE/targetgroups"; : >"$STATE/pvcs"; : >"$STATE/apps"
+# Three volumes: ours, another cluster's CSI volume, and a plain untagged one.
+cat >"$STATE/volumes" <<'EOF'
+vol-ours available airflow
+vol-other-cluster available someone-elses-namespace
+vol-not-csi available none
+EOF
+run_stage 05-tofu-destroy; check "stage 5 exits 0" 0 $?
+check "ours was swept" no "$(grep -qF vol-ours "$STATE/volumes" && echo yes || echo no)"
+check "another cluster's CSI volume survives" yes \
+  "$(grep -qF vol-other-cluster "$STATE/volumes" && echo yes || echo no)"
+check "the non-CSI volume survives" yes \
+  "$(grep -qF vol-not-csi "$STATE/volumes" && echo yes || echo no)"
 
 if ((failures)); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2
