@@ -30,7 +30,11 @@ Snowflake database. dbt gets an environment only because Airflow runs it.
 - **prod** — the production Airflow on EKS, building into `STEAM_PROD`.
 
 **Promotion** — moving an already-built image tag from staging to prod.
-The image is never rebuilt between environments.
+The image is never rebuilt between environments. Mechanically: the
+**Promote to prod** workflow opens a PR setting prod's image tag to
+staging's, and merging that PR is both the approval and the deploy
+(README.md, "Promote to prod"). Rollback is the same thing with an older
+tag.
 
 See `docs/adr/0001-argocd-reverses-iac-boundary-28.md` for why ArgoCD owns
 this layer instead of Terraform or hand-run `kubectl`.
