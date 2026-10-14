@@ -225,8 +225,11 @@ grant_read_deny_check() {
     warn "$output"
     fail "$writer_role could not create $table — check its grants in terraform/snowflake/identities.tf"
   fi
-  read_output=$(grant_probe "$reader" "$reader_role" "SELECT probe FROM $table")
-  status=$?
+  if read_output=$(grant_probe "$reader" "$reader_role" "SELECT probe FROM $table"); then
+    status=0
+  else
+    status=$?
+  fi
   grant_probe "$writer" "$writer_role" "$drop" >/dev/null \
     || fail "could not drop $table after the read-deny check"
   if ((status == 0)); then

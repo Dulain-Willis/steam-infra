@@ -130,25 +130,40 @@ run_scenario() {
   # A subshell, because `fail` exits: that is what the status under test is.
   # stderr is folded in and only shown when the outcome is wrong, so an
   # expected failure doesn't look like a real one in the log.
+  # set -euo pipefail here, not just -uo pipefail: this subshell stands in for
+  # scripts/bringup/stages/02-snowflake.sh, which runs these functions under
+  # set -euo pipefail. A harness that runs them under looser options can't
+  # catch a set -e-sensitive bug in any of them — see grant_read_deny_check's
+  # history. The calls are sequential statements, not an `&&` chain, for the
+  # same reason: `&&` suppresses -e on every command but the list's last, which
+  # would hide the same class of bug one call earlier.
+  #
+  # Captured as a bare `out=$(...); status=$?`, not `if out=$(...); then`: this
+  # script itself runs under `-uo pipefail` (no -e), so that's safe here — and
+  # it has to be this form, because wrapping the capture in an `if` condition
+  # disables errexit for every command *substitution nested inside it*,
+  # including the ones inside the functions under test. Wrapping it would
+  # silently undo the fix above: the inner `set -e` would stop catching
+  # anything the moment it's evaluated as an `if`'s condition.
   out=$(
     {
-      set -uo pipefail
+      set -euo pipefail
       WRITABLE="${WRITABLE:-$CORRECT_WRITABLE}"
       READABLE="${READABLE:-$CORRECT_READABLE}"
       EMPTY_KEY_FOR="${EMPTY_KEY_FOR:-}"
       export WRITABLE READABLE EMPTY_KEY_FOR
-      grant_check_local_key developer SVC_developer "${DEV_KEY:-$DEV_KEY_FILE}" \
-        && grant_isolation_check "${cases[@]}" \
-        && grant_handoff_check loader LOADER staging_airflow TRANSFORMER_STAGING "$RAW" \
-        && grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW" \
-        && grant_handoff_check loader LOADER developer DEVELOPER "$RAW" \
-        && grant_handoff_check loader LOADER ci CI "$RAW" \
-        && grant_handoff_check prod_airflow TRANSFORMER_PROD ci CI "$PROD" TABLE VIEW \
-        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING ci CI "$STAGING" \
-        && grant_read_deny_check prod_airflow TRANSFORMER_PROD developer DEVELOPER "$PROD" \
-        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING developer DEVELOPER "$STAGING" \
-        && grant_read_deny_check prod_airflow TRANSFORMER_PROD staging_airflow TRANSFORMER_STAGING "$PROD" \
-        && grant_read_deny_check staging_airflow TRANSFORMER_STAGING prod_airflow TRANSFORMER_PROD "$STAGING"
+      grant_check_local_key developer SVC_developer "${DEV_KEY:-$DEV_KEY_FILE}"
+      grant_isolation_check "${cases[@]}"
+      grant_handoff_check loader LOADER staging_airflow TRANSFORMER_STAGING "$RAW"
+      grant_handoff_check loader LOADER prod_airflow TRANSFORMER_PROD "$RAW"
+      grant_handoff_check loader LOADER developer DEVELOPER "$RAW"
+      grant_handoff_check loader LOADER ci CI "$RAW"
+      grant_handoff_check prod_airflow TRANSFORMER_PROD ci CI "$PROD" TABLE VIEW
+      grant_read_deny_check staging_airflow TRANSFORMER_STAGING ci CI "$STAGING"
+      grant_read_deny_check prod_airflow TRANSFORMER_PROD developer DEVELOPER "$PROD"
+      grant_read_deny_check staging_airflow TRANSFORMER_STAGING developer DEVELOPER "$STAGING"
+      grant_read_deny_check prod_airflow TRANSFORMER_PROD staging_airflow TRANSFORMER_STAGING "$PROD"
+      grant_read_deny_check staging_airflow TRANSFORMER_STAGING prod_airflow TRANSFORMER_PROD "$STAGING"
       grant_check_cleanup
     } 2>&1
   )
