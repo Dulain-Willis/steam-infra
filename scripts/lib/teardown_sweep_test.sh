@@ -44,6 +44,16 @@ mkdir -p "$BIN"
 #   vpcs         <id> <name>
 #   log          every stub invocation, in order
 #   undeletable  ARNs delete-load-balancer refuses (models AWS saying no)
+#   detach_delay <volume-id> <polls-remaining>  -- #124: a volume whose
+#                finalizer has already been force-cleared but which real EBS
+#                detachment has not finished yet. Every `aws ec2
+#                describe-volumes` call (the only polling signal the stage
+#                scripts have) ticks every pending entry down by one; at zero
+#                the volume becomes `available`, same as a real detach
+#                completing partway through a wait. Every other scenario's
+#                stuck PVC detaches the instant its finalizer is cleared,
+#                which is the exact promptness #124 found the suite could not
+#                see past.
 
 cat >"$BIN/fakelib.sh" <<'FAKELIB'
 STATE="$FAKE_STATE"
@@ -91,6 +101,31 @@ set_field() {  # set_field FILE KEY-VALUE FIELD-INDEX NEW
 pods_state() { awk -v n="$1" '$1 == n { print $2 }' "$STATE/pods"; }
 app_sync() { awk -v n="$1" '$1 == n { print $3 }' "$STATE/apps"; }
 
+# has_detach_delay VOLUME — true if this volume is still mid-detach (#124):
+# its finalizer may already be gone, but it isn't `available` yet.
+has_detach_delay() { grep -qE "^$1 " "$STATE/detach_delay" 2>/dev/null; }
+
+# tick_detach_delays — called on every `aws ec2 describe-volumes`, the only
+# polling signal the real stage scripts have. Counts every pending volume
+# down by one poll; at zero, the volume actually becomes `available`, same as
+# a real EBS detach finishing partway through a wait rather than the instant
+# its finalizer was cleared.
+tick_detach_delays() {
+  [[ -s "$STATE/detach_delay" ]] || return 0
+  : >"$STATE/detach_delay.tmp"
+  local vol left
+  while read -r vol left; do
+    [[ -n "${vol:-}" ]] || continue
+    left=$((left - 1))
+    if (( left <= 0 )); then
+      set_field volumes "$vol" 2 available
+    else
+      printf '%s %s\n' "$vol" "$left" >>"$STATE/detach_delay.tmp"
+    fi
+  done <"$STATE/detach_delay"
+  mv "$STATE/detach_delay.tmp" "$STATE/detach_delay"
+}
+
 # selfHeal: true is set on root and every child (argocd/root.yaml,
 # argocd/apps/*.yaml), so ArgoCD puts back anything deleted out from under an
 # Application whose automated sync is still on. Modelled on every stub call
@@ -121,9 +156,11 @@ reconcile() {
         drop_line volumes 1 "$vol"
         continue
       fi
-      # Finalizer stuck: the claim never goes, and the volume is detached but
-      # never deleted. #122's second shape.
-      set_field volumes "$vol" 2 available
+      # Finalizer stuck: the claim never goes. Normally the volume detaches
+      # right away anyway (#122's second shape) -- unless a scenario primed
+      # it with a #124 detach_delay, in which case it stays in-use until the
+      # delay's polls tick it down (tick_detach_delays, in the aws stub).
+      has_detach_delay "$vol" || set_field volumes "$vol" 2 available
     fi
     out+="$ns $name $vol $st $fin"$'\n'
   done <"$STATE/pvcs"
@@ -250,6 +287,7 @@ case "$svc:$op" in
     fi ;;
 
   ec2:describe-volumes)
+    tick_detach_delays
     want="$(argval "Name=status,Values" "$@" || true)"
     # The filters arrive as positional "Name=...,Values=..." strings.
     want=""; kind=""
@@ -421,16 +459,23 @@ EOF
   printf 'vpc-steam steam-infra\n' >"$STATE/vpcs"
   : >"$STATE/undeletable"
   : >"$STATE/fail"
+  : >"$STATE/detach_delay"
   : >"$STATE/log"
 }
 
-run_stage() {  # run_stage 02-argocd|05-tofu-destroy -> captures output, returns status
+# run_stage 02-argocd|05-tofu-destroy [VAR=val ...] -> captures output, returns
+# status. Extra VAR=val arguments override the default (shortened-for-tests)
+# timeouts below -- needed by scenario 20, which must poll more than once or
+# twice for a delayed detach to resolve.
+run_stage() {
+  local stage="$1"; shift
   local out status
   out=$(
-    PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
+    env PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
       TEARDOWN_DRAIN_TIMEOUT=1 TEARDOWN_CLEANUP_TIMEOUT=1 \
       TEARDOWN_ESCALATED_TIMEOUT=1 TEARDOWN_POLL_INTERVAL=1 \
-      bash "$REPO_ROOT/scripts/teardown/stages/$1.sh" 2>&1
+      "$@" \
+      bash "$REPO_ROOT/scripts/teardown/stages/$stage.sh" 2>&1
   )
   status=$?
   printf '%s' "$out" >"$STATE/out"
@@ -743,6 +788,33 @@ check "it says MANUAL CHECK REQUIRED, not drained" yes \
 check "it did try to delete the load balancer directly first" yes \
   "$(logged 'elbv2 delete-load-balancer')"
 check "the target group it could not even list is still there" 1 "$(count targetgroups)"
+
+# ---------------------------------------------------------------------------
+# 20. #124 itself: a PVC's volume stays Terminating for several polls AFTER
+#     its finalizer has been force-cleared. Every scenario above detaches the
+#     instant the finalizer clears, which is exactly the promptness that let
+#     #124 through live: all eight PVCs across both environments had their
+#     finalizers cleared, and cleanup still never converged, because the
+#     escalation's one sweep ran before the volumes had actually detached and
+#     nothing swept again afterwards.
+# ---------------------------------------------------------------------------
+scenario "20. a PVC's volume stays Terminating for several polls after its finalizer clears"
+new_state
+sed -i.bak 's/^airflow-staging logs-airflow-staging-worker-0 \(.*\) normal$/airflow-staging logs-airflow-staging-worker-0 \1 stuck/' "$STATE/pvcs"
+# 10 polls of real detach latency -- more than the two describe-volumes calls
+# a single escalation sweep makes, so it cannot still be caught by one sweep
+# run before a wait. TEARDOWN_ESCALATED_TIMEOUT/POLL_INTERVAL are widened (the
+# suite's usual 1s/1s doesn't leave room to observe more than one poll).
+printf 'vol-staging-logs 10\n' >"$STATE/detach_delay"
+run_stage 02-argocd TEARDOWN_ESCALATED_TIMEOUT=10 TEARDOWN_POLL_INTERVAL=1
+check "stage 2 exits 0" 0 $?
+check "escalated to clearing the PVC finalizer" yes \
+  "$(logged 'patch persistentvolumeclaim logs-airflow-staging-worker-0')"
+check "took more than one poll for the volume to actually detach" yes \
+  "$([[ $(grep -c 'ec2 describe-volumes' "$STATE/log") -gt 4 ]] && echo yes || echo no)"
+check "the volume was swept once it detached, not left behind" yes \
+  "$(logged 'ec2 delete-volume')"
+check "all volumes are gone" 0 "$(count volumes)"
 
 if ((failures)); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2
