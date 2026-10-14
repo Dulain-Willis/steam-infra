@@ -38,6 +38,28 @@ declare -A AIRFLOW_SNOWFLAKE_IDENTITY=(
   [airflow-staging]=staging_airflow
 )
 
+# rand_alnum N — N random [A-Za-z0-9] characters, for the plain-string
+# Secrets (api-secret-key, jwt-secret, redis-password). Mirrors the chart's
+# own `randAlphaNum` default so a pinned value looks like what it replaced.
+# `|| true` is load-bearing, not decorative: `tr` keeps reading /dev/urandom
+# after `head -c` has taken its N bytes and exited, so `tr` is killed by
+# SIGPIPE and the pipeline's real exit status (with `set -o pipefail`, which
+# this file's caller sets) is 141. A bare `x=$(rand_alnum N)` assignment is
+# itself the simple command set -e inspects, so that 141 would abort the
+# whole stage -- every bring-up, since this path runs whenever the Secret
+# doesn't already exist, which is the normal case the get-or-create guards
+# above exist for.
+rand_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$1" || true; }
+
+# rand_fernet_key — 32 random bytes, URL-safe base64-encoded. That is
+# exactly cryptography's Fernet.generate_key() (base64.urlsafe_b64encode of
+# os.urandom(32)) and the only format Airflow's fernet_key config accepts;
+# the chart's own generated default (`randAlphaNum 32`, alnum text) is not
+# actually a valid Fernet key, which has never mattered because nothing has
+# used it to encrypt a Connection (#118 Q7.10) -- get this one right anyway
+# rather than carry the chart's shortcut forward into a value we control.
+rand_fernet_key() { openssl rand -base64 32 | tr '+/' '-_'; }
+
 # Every Application the root app-of-apps (argocd/apps) is expected to bring
 # up. Checked in both directions — every name here must go Synced+Healthy,
 # and report_unexpected_apps fails if argocd holds one that is not here.
@@ -82,6 +104,23 @@ apps_synced_and_healthy() {
     [[ "$status" == "Synced" && "$health" == "Healthy" ]] || return 1
   done
   return 0
+}
+
+# laggard_apps — the subset of EXPECTED_APPS that is not Synced+Healthy right
+# now, "name(status/health)" each. Used only in the timeout failure message:
+# #123 found that message naming *every* Application (nine of ten
+# Synced/Healthy, one stuck) reads as a total ArgoCD collapse rather than one
+# stuck release, which cost real diagnosis time. Re-queries rather than
+# reusing apps_synced_and_healthy's last pass so the message reflects the
+# state at the moment of failure, not an earlier iteration.
+laggard_apps() {
+  local app status health out=()
+  for app in "${EXPECTED_APPS[@]}"; do
+    status=$(kubectl get application "$app" -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || true)
+    health=$(kubectl get application "$app" -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || true)
+    [[ "$status" == "Synced" && "$health" == "Healthy" ]] || out+=("$app(${status:-?}/${health:-?})")
+  done
+  printf '%s\n' "${out[*]}"
 }
 
 # The other direction: an Application the cluster has that EXPECTED_APPS does
@@ -200,6 +239,45 @@ for ns in "${AIRFLOW_ENVIRONMENTS[@]}"; do
     --from-literal=email="$AIRFLOW_ALERT_EMAIL" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   ok "$ns: snowflake-keypair ($airflow_user, private_key_pkcs8 PEM), snowflake-account, snowflake-user, airflow-alert-email"
+
+  # The five Secrets values.yaml pins (fernetKeySecretName etc, #123) --
+  # unlike the Snowflake secrets above, created only if missing rather than
+  # `apply`d every run. The Snowflake keys are *meant* to rotate every
+  # bring-up because terraform/snowflake regenerates the key pair on every
+  # apply regardless of what the k8s Secret holds; these are not tied to
+  # any terraform output, so "apply unconditionally" would mean regenerating
+  # them on every re-run of this stage, including a `--start-from 5` resume
+  # against a cluster that is still up -- rotating the fernet/JWT/API/redis
+  # values out from under pods that are already running on them, for no
+  # reason (the thing #118 Q7.10 flagged as the actual cost of rotation).
+  # Get-or-create makes them persist for the life of one cluster and rotate
+  # only across a full bring-up/teardown cycle, which is when it is moot
+  # anyway: teardown's tofu destroy removes the EKS cluster itself (not just
+  # the namespace), so the next bring-up finds no Secret, no pod and no
+  # metadata DB (chart Postgres PVC, also destroyed) to invalidate.
+  if ! kubectl get secret fernet-key -n "$ns" >/dev/null 2>&1; then
+    kubectl create secret generic fernet-key -n "$ns" --from-literal=fernet-key="$(rand_fernet_key)" >/dev/null
+  fi
+  if ! kubectl get secret api-secret-key -n "$ns" >/dev/null 2>&1; then
+    kubectl create secret generic api-secret-key -n "$ns" --from-literal=api-secret-key="$(rand_alnum 32)" >/dev/null
+  fi
+  if ! kubectl get secret jwt-secret -n "$ns" >/dev/null 2>&1; then
+    kubectl create secret generic jwt-secret -n "$ns" --from-literal=jwt-secret="$(rand_alnum 128)" >/dev/null
+  fi
+  # redis-password and broker-url must agree: the broker URL embeds the same
+  # password the Celery workers authenticate to redis with (the chart's own
+  # redis-secrets.yaml template does the same pairing). Generated together,
+  # and both skipped once either exists, so a partial previous run can never
+  # leave them holding two different passwords.
+  if ! kubectl get secret redis-password -n "$ns" >/dev/null 2>&1 || ! kubectl get secret broker-url -n "$ns" >/dev/null 2>&1; then
+    redis_password=$(rand_alnum 24)
+    kubectl create secret generic redis-password -n "$ns" --from-literal=password="$redis_password" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+    kubectl create secret generic broker-url -n "$ns" \
+      --from-literal=connection="redis://:${redis_password}@${ns}-redis:6379/0" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  fi
+  ok "$ns: fernet-key, api-secret-key, jwt-secret, redis-password, broker-url"
 done
 
 # 12h-lived ECR login token, regenerated per session rather than stored in
@@ -219,7 +297,7 @@ nstep 5 "verifying the CDC layer..."
 nsub "waiting for every Application to be Synced and Healthy..."
 deadline=$((SECONDS + 900))
 until apps_synced_and_healthy; do
-  (( SECONDS < deadline )) || fail "not every Application reached Synced+Healthy in time: ${EXPECTED_APPS[*]}"
+  (( SECONDS < deadline )) || fail "Application(s) did not reach Synced+Healthy in time: $(laggard_apps)"
   sleep 15
 done
 report_unexpected_apps \
