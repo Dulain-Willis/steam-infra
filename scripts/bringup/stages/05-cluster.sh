@@ -41,7 +41,15 @@ declare -A AIRFLOW_SNOWFLAKE_IDENTITY=(
 # rand_alnum N — N random [A-Za-z0-9] characters, for the plain-string
 # Secrets (api-secret-key, jwt-secret, redis-password). Mirrors the chart's
 # own `randAlphaNum` default so a pinned value looks like what it replaced.
-rand_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$1"; }
+# `|| true` is load-bearing, not decorative: `tr` keeps reading /dev/urandom
+# after `head -c` has taken its N bytes and exited, so `tr` is killed by
+# SIGPIPE and the pipeline's real exit status (with `set -o pipefail`, which
+# this file's caller sets) is 141. A bare `x=$(rand_alnum N)` assignment is
+# itself the simple command set -e inspects, so that 141 would abort the
+# whole stage -- every bring-up, since this path runs whenever the Secret
+# doesn't already exist, which is the normal case the get-or-create guards
+# above exist for.
+rand_alnum() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$1" || true; }
 
 # rand_fernet_key — 32 random bytes, URL-safe base64-encoded. That is
 # exactly cryptography's Fernet.generate_key() (base64.urlsafe_b64encode of
