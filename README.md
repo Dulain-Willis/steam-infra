@@ -9,7 +9,7 @@ sessions.
 ## Bring up
 
 ```bash
-./bringup/bringup.sh
+./scripts/bringup/bringup.sh
 ```
 
 Takes ~30 minutes from nothing to a verified, data-flowing pipeline,
@@ -20,20 +20,20 @@ session. Flags:
   leftover-teardown check, so resuming never destroys what's already up).
 - `--stop-after N` — stop after stage N, to test a partial bring-up.
 
-Each stage script in `bringup/stages/` is also runnable on its own, e.g.
-`bringup/stages/03-aws.sh`, to debug one stage in isolation. Noisy tool
+Each stage script in `scripts/bringup/stages/` is also runnable on its own,
+e.g. `scripts/bringup/stages/03-aws.sh`, to debug one stage in isolation. Noisy tool
 output (tofu, kubectl, helm) is logged under `/tmp`; a failing step prints
 the tail of its log.
 
 ## Tear down
 
 ```bash
-./teardown/teardown.sh
+./scripts/teardown/teardown.sh
 ```
 
 Takes everything back to $0 billable in AWS and Snowflake, and proves it.
 Same `--start-from`/`--stop-after` flags; same per-stage scripts in
-`teardown/stages/`.
+`scripts/teardown/stages/`.
 
 Deletion **order** is load-bearing (#122). Anything whose finalizer only a
 controller can release — Ingresses holding `ingress.k8s.aws/resources`, PVCs
@@ -48,7 +48,7 @@ and the ALB controller's own security groups, which make `DeleteVpc` fail with
 `DependencyViolation`.
 
 All of that — including the failure paths a live teardown can never produce —
-is covered without a cluster by `lib/teardown_sweep_test.sh`, which stubs
+is covered without a cluster by `scripts/lib/teardown_sweep_test.sh`, which stubs
 `kubectl`, `aws` and `tofu` and runs the real stage scripts against a model of
 the stack:
 
@@ -202,8 +202,8 @@ Account-specific values that can't come from `.env` or `tofu output`:
 
 ## Layout
 
-- `bringup/`, `teardown/` — entrypoint scripts and their numbered stages.
-- `lib/` — shared library: terminal output helpers, `.env`/tofu wrappers,
+- `scripts/bringup/`, `scripts/teardown/` — entrypoint scripts and their numbered stages.
+- `scripts/lib/` — shared library: terminal output helpers, `.env`/tofu wrappers,
   the SSM tunnel, and the Snowflake query helper used by both flows' verify
   steps.
 - `terraform/` — AWS infrastructure (network, EKS, RDS, ECR, bastion,
