@@ -79,3 +79,41 @@ ingress:
       alb.ingress.kubernetes.io/scheme: internal
       alb.ingress.kubernetes.io/target-type: ip
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+# #118's Q7.10 diagnosed this and left it alone for want of staging evidence;
+# #123 is that evidence. Unset, the chart generates fernetKey/apiSecretKey/
+# jwtSecret/the redis password+broker URL per release. Three of those five
+# (fernet key, redis password, redis connection) are "helm.sh/hook:
+# pre-install" / "before-hook-creation" -- translated by ArgoCD into a PreSync
+# hook recreated on every sync. With one Airflow release that was tolerable
+# (just session churn); with two, ArgoCD's hook-completion semantics never
+# resolved for the second release and bring-up's health gate failed waiting
+# on it forever (#123). The other two (api secret key, jwt secret) carry no
+# hook but are plain Sync resources whose desired content is a fresh random
+# value on every render, which selfHeal then rewrites every sync -- same
+# churn, no deadlock.
+#
+# Pinning all five *names* removes every one of those Secrets from the
+# chart's render (the templates are gated on "if not .Values.<x>SecretName" /
+# "if not .Values.redis.passwordSecretName" / "if not
+# .Values.data.brokerUrlSecretName") -- so there is nothing left for ArgoCD
+# to wait on or rewrite. bring-up/stages/05-cluster.sh creates the Secrets
+# themselves, per namespace, alongside snowflake-keypair/snowflake-account/
+# snowflake-user/airflow-alert-email. The names are environment-independent:
+# each Secret is namespace-local, so every environment uses the same name
+# with different (namespace-scoped) contents -- identical to how those four
+# already work.
+#
+# Note: the chart's real key for the JWT secret's name override is
+# `jwtSecretName`, not `jwtSecretSecretName` -- verified against
+# `helm show values apache-airflow/airflow --version 1.22.0` and the
+# chart's templates/_helpers.yaml (`jwtSecretName` is read in three places;
+# `jwtSecretSecretName` does not exist in the chart at all and would have
+# silently done nothing).
+fernetKeySecretName: fernet-key
+apiSecretKeySecretName: api-secret-key
+jwtSecretName: jwt-secret
+redis:
+  passwordSecretName: redis-password
+data:
+  brokerUrlSecretName: broker-url

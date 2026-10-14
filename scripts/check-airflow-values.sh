@@ -256,4 +256,72 @@ else
   echo "FAIL  base values leak environment-specific values:"; echo "$leaked"; status=1
 fi
 
+# --- #123: the chart's generated Secrets must actually be gone ------------
+#
+# Three of them (fernet key, redis password, the redis connection/broker
+# URL) are rendered as "helm.sh/hook": "pre-install" -- ArgoCD translates
+# that to a PreSync hook recreated on every sync, and with two Airflow
+# releases the second one's hook-completion wait never resolved (#123's
+# bring-up symptom: "waiting for completion of hook /Secret/.../-broker-url
+# and 2 more hooks", forever). Checked on the *per-environment* render
+# (base + overlay + image), not the base alone: a chart template is gated on
+# whether a values *overlay* leaves the matching *SecretName unset, so the
+# base rendering clean proves nothing about what a real release gets.
+#
+# This is the assertion #122's invariant is aimed at: it must be possible to
+# see it fail. Prove that to yourself by reverting the five *SecretName
+# lines this ticket added to values.yaml and re-running this script -- the
+# hook annotation reappears and this block reports FAIL, twice (once per
+# environment), which is also why it is a loop over every rendered stack
+# rather than a single check on the first one.
+if (( ${#releases[@]} )); then
+  i=0
+  for overlay in "$VALUES_DIR"/values-*.yaml; do
+    case $(basename "$overlay") in values-image-*) continue ;; esac
+    env_name=$(basename "$overlay" .yaml); env_name=${env_name#values-}
+    image="$VALUES_DIR/values-image-$env_name.yaml"
+    [[ -f $image ]] || continue
+    app=$(app_for "$env_name")
+    [[ -n $app && $app != *$'\n'* ]] || continue
+    release="${releases[$i]:-}"
+    namespace=$(awk '/^  destination:/{f=1} f && /^    namespace:/{print $2; exit}' "$app")
+    chart_version=$(chart_version_of "$app")
+    i=$((i + 1))
+    [[ -n $release && -n $namespace && -n $chart_version ]] || continue
+    full_render=$(render "$release" "$chart_version" "$namespace" \
+      -f "$VALUES_DIR/values.yaml" -f "$overlay" -f "$image") || continue
+    hooked=$(grep -n 'pre-install' <<<"$full_render" | grep -v '^[0-9]*:#' || true)
+    if [[ -n $hooked ]]; then
+      echo "FAIL  $env_name's render still carries a pre-install hook -- a chart-generated Secret is not pinned:"; echo "$hooked"; status=1
+    else
+      echo "ok    $env_name's render carries no pre-install hook"
+    fi
+  done
+fi
+
+# Every *SecretName (and redis.passwordSecretName / data.brokerUrlSecretName)
+# the base sets must be a Secret bring-up actually creates
+# (scripts/bringup/stages/05-cluster.sh) -- otherwise pinning the name in
+# values.yaml only trades "ArgoCD waits on a hook forever" for "the Secret
+# the chart no longer generates doesn't exist either", and the pods that
+# need it sit in CreateContainerConfigError instead.
+base_secret_names=$(grep -oE '^[A-Za-z]*SecretName: \S+' "$VALUES_DIR/values.yaml" | awk '{print $2}')
+base_secret_names+=$'\n'$(grep -oE '^  (passwordSecretName|brokerUrlSecretName): \S+' "$VALUES_DIR/values.yaml" | awk '{print $2}')
+base_secret_names=$(grep -v '^$' <<<"$base_secret_names" || true)
+if [[ -z $base_secret_names ]]; then
+  echo "FAIL  found no *SecretName pins in values.yaml to check against bring-up -- did the grep pattern stop matching?"
+  status=1
+else
+  bringup_file="$REPO_ROOT/scripts/bringup/stages/05-cluster.sh"
+  while read -r name; do
+    [[ -n $name ]] || continue
+    if grep -q "kubectl create secret generic $name " "$bringup_file"; then
+      echo "ok    $name (pinned in values.yaml) is created by $(basename "$bringup_file")"
+    else
+      echo "FAIL  values.yaml pins a Secret name '$name' that $(basename "$bringup_file") never creates"
+      status=1
+    fi
+  done <<<"$base_secret_names"
+fi
+
 exit "$status"
