@@ -157,14 +157,34 @@ if [[ "$CLUSTER_UP" == true ]]; then
       kubectl delete application "$app" -n argocd --wait=false --ignore-not-found >/dev/null 2>&1 || true
     done
 
-    # After the finalizers, not before: releasing a stuck pvc-protection is
-    # what detaches the volume, and only a detached one is `available` and so
-    # deletable.
-    sweep_orphan_volumes
+    # Clearing pvc-protection STARTS detachment; it does not finish it. #124:
+    # all eight PVCs across both environments had their finalizers cleared,
+    # and teardown still didn't converge, because the only sweep ran once
+    # here -- before the volumes had actually detached -- and nothing swept
+    # again afterwards. A volume that turns `available` partway through the
+    # wait below needs to be swept *then*, not missed until the timeout.
+    # >&2, not >/dev/null: output.sh's warn() writes to stdout with no
+    # stderr fallback, so a volume repeatedly failing ec2 delete-volume here
+    # would otherwise have its "could not delete $vol" dropped silently on
+    # every poll -- exactly the failure-visibility this file insists on
+    # everywhere else. Routing to stderr keeps it out of the count
+    # wait_until captures while still reaching the operator.
+    escalated_cleanup_remaining() {
+      sweep_orphan_volumes >&2
+      cleanup_remaining
+    }
 
-    wait_until "$TEARDOWN_ESCALATED_TIMEOUT" cleanup_remaining \
-      || fail "cleanup did not finish even after clearing finalizers — MANUAL CHECK REQUIRED, the stack may still be billing"
-    ok "cleanup finished after escalating"
+    if wait_until "$TEARDOWN_ESCALATED_TIMEOUT" escalated_cleanup_remaining; then
+      ok "cleanup finished after escalating"
+    else
+      # Still not zero. Escalating again would just repeat what already ran;
+      # what's missing is time for AWS to finish detaching, so wait once more,
+      # bounded the same way, and say plainly if even that lapses (#124).
+      warn "cleanup still not finished after ${TEARDOWN_ESCALATED_TIMEOUT}s — waiting once more before giving up (see #124)"
+      wait_until "$TEARDOWN_ESCALATED_TIMEOUT" escalated_cleanup_remaining \
+        || fail "cleanup did not finish even after clearing finalizers and a second wait — MANUAL CHECK REQUIRED, the stack may still be billing"
+      ok "cleanup finished after escalating and a second wait"
+    fi
   fi
 fi
 

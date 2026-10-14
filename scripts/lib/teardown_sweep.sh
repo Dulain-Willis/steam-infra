@@ -20,8 +20,16 @@
 
 # Overridable so the test suite does not sleep for real; the defaults are the
 # live ones.
+#
+# TEARDOWN_CLEANUP_TIMEOUT scales with AIRFLOW_ENVIRONMENTS (lib/env.sh,
+# sourced before this file): 600s was tuned by hand for today's two
+# environments (#122) and silently assumed exactly two. #124 is what a second
+# environment actually costs: eight PVCs instead of four, including two 100Gi
+# log volumes, and the fixed deadline was no longer enough slack before
+# escalating. 300s/environment makes today's default explicit instead of a
+# coincidence, and keeps scaling if a third environment is ever added (#119).
 : "${TEARDOWN_DRAIN_TIMEOUT:=600}"
-: "${TEARDOWN_CLEANUP_TIMEOUT:=600}"
+: "${TEARDOWN_CLEANUP_TIMEOUT:=$(( 300 * ${#AIRFLOW_ENVIRONMENTS[@]} ))}"
 : "${TEARDOWN_ESCALATED_TIMEOUT:=180}"
 : "${TEARDOWN_POLL_INTERVAL:=10}"
 
@@ -189,10 +197,20 @@ alb_controller_security_groups() {
 # wait_until TIMEOUT COUNT_FN... — polls COUNT_FN until it prints 0. Returns 0
 # when it does, 1 on timeout. SECONDS-based so the test can stub `sleep` to
 # advance the clock instead of waiting.
+#
+# COUNT_FN runs via command substitution, i.e. in its own subshell: if it
+# calls fail() (an unconditional `exit`, used by every lister in this file),
+# that only kills the subshell, not this loop — so its status is checked too,
+# not just its printed count. Without that, a listing failure deep inside a
+# wrapped count function (#124's escalated re-sweeps call sweep_orphan_volumes,
+# which can fail()) would silently read as "not converged yet" and get polled
+# against for the full timeout instead of aborting on the first sign of it.
 wait_until() {
-  local deadline=$((SECONDS + $1)); shift
+  local deadline=$((SECONDS + $1)) out status; shift
   while :; do
-    [[ "$("$@")" == 0 ]] && return 0
+    out=$("$@"); status=$?
+    (( status == 0 )) || return "$status"
+    [[ "$out" == 0 ]] && return 0
     (( SECONDS >= deadline )) && return 1
     sleep "$TEARDOWN_POLL_INTERVAL"
   done
