@@ -163,8 +163,14 @@ if [[ "$CLUSTER_UP" == true ]]; then
     # here -- before the volumes had actually detached -- and nothing swept
     # again afterwards. A volume that turns `available` partway through the
     # wait below needs to be swept *then*, not missed until the timeout.
+    # >&2, not >/dev/null: output.sh's warn() writes to stdout with no
+    # stderr fallback, so a volume repeatedly failing ec2 delete-volume here
+    # would otherwise have its "could not delete $vol" dropped silently on
+    # every poll -- exactly the failure-visibility this file insists on
+    # everywhere else. Routing to stderr keeps it out of the count
+    # wait_until captures while still reaching the operator.
     escalated_cleanup_remaining() {
-      sweep_orphan_volumes >/dev/null
+      sweep_orphan_volumes >&2
       cleanup_remaining
     }
 

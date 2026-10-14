@@ -45,7 +45,11 @@ run_step "tofu destroy" tf destroy -auto-approve "${EXCLUDES[@]}"
 # after a single pass. (Stage 6's $0 verify would still catch a leftover
 # volume and fail the whole teardown -- better to converge here first.)
 nstep 4 "sweeping CSI-provisioned EBS volumes tofu destroy does not own..."
-sweep_remaining_volumes() { sweep_orphan_volumes >/dev/null; cluster_volumes_count; }
+# >&2, not >/dev/null -- see 02-argocd.sh's escalated_cleanup_remaining: warn()
+# has no stderr fallback, so a volume that keeps failing delete-volume would
+# otherwise lose its diagnostic on every poll instead of just its routine
+# "no orphaned CSI volumes" chatter.
+sweep_remaining_volumes() { sweep_orphan_volumes >&2; cluster_volumes_count; }
 wait_until "$TEARDOWN_ESCALATED_TIMEOUT" sweep_remaining_volumes \
   || fail "EBS volumes are still detaching after ${TEARDOWN_ESCALATED_TIMEOUT}s — MANUAL CHECK REQUIRED, the stack may still be billing"
 ok "no orphaned CSI volumes left"
