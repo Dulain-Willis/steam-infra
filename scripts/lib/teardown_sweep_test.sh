@@ -721,6 +721,29 @@ check "another cluster's CSI volume survives" yes \
 check "the non-CSI volume survives" yes \
   "$(grep -qF vol-not-csi "$STATE/volumes" && echo yes || echo no)"
 
+# ---------------------------------------------------------------------------
+# 19. delete_project_load_balancers used to run `for arn in $(project_elb_arns
+#     ...)` directly: a failed listing word-splits to nothing and the loop
+#     silently runs zero times, so the escalation "succeeds" having deleted
+#     nothing. Unlike scenarios 14-18, this is not set -e aborting a bare
+#     assignment -- it is the mirror failure mode, silent continuation, which
+#     `-e` cannot see at all. Fails the target-group listing specifically
+#     (never consulted by the "owned" pre-check that gates escalation, so this
+#     is the escalation's own call that must be checked, not a guard one call
+#     earlier catching it first).
+# ---------------------------------------------------------------------------
+scenario "19. escalation's target-group listing fails: must not report drained"
+new_state
+printf 'dead\n' >"$STATE/controller"     # forces the drain to time out and escalate
+printf 'elasticloadbalancing:targetgroup\n' >"$STATE/fail"
+run_stage 02-argocd
+check "stage 2 fails" 1 $?
+check "it says MANUAL CHECK REQUIRED, not drained" yes \
+  "$(grep -qF 'MANUAL CHECK REQUIRED' "$STATE/out" && echo yes || echo no)"
+check "it did try to delete the load balancer directly first" yes \
+  "$(logged 'elbv2 delete-load-balancer')"
+check "the target group it could not even list is still there" 1 "$(count targetgroups)"
+
 if ((failures)); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2
   exit 1

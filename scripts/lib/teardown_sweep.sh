@@ -223,15 +223,25 @@ clear_finalizers() {
 # directly, by tag. Only reached from an escalation path — while the controller
 # is alive, deleting the Ingress is what should remove them.
 delete_project_load_balancers() {
-  local arn
-  for arn in $(project_elb_arns loadbalancer); do
+  local arn arns
+  # `for arn in $(cmd)` throws cmd's exit status away: a failed listing
+  # word-splits to nothing and the loop silently runs zero times, which is
+  # this sweep reporting clean when it asked nothing (#122's invariant, and
+  # the thing project_elb_arns itself already guards against — only the
+  # caller was throwing that away). Capture and check first, same as every
+  # other lister in this file.
+  arns=$(project_elb_arns loadbalancer) \
+    || fail "could not list this cluster's load balancers by tag — refusing to report the sweep clean when it asked nothing. MANUAL CHECK REQUIRED"
+  for arn in $arns; do
     nbullet "deleting load balancer $arn"
     aws elbv2 delete-load-balancer --region "$AWS_REGION" --load-balancer-arn "$arn" \
       >/dev/null 2>&1 || warn "could not delete $arn"
   done
   # Target groups go after the load balancer; while it exists they are still
   # attached to its listener and DeleteTargetGroup is refused.
-  for arn in $(project_elb_arns targetgroup); do
+  arns=$(project_elb_arns targetgroup) \
+    || fail "could not list this cluster's target groups by tag — refusing to report the sweep clean when it asked nothing. MANUAL CHECK REQUIRED"
+  for arn in $arns; do
     nbullet "deleting target group $arn"
     aws elbv2 delete-target-group --region "$AWS_REGION" --target-group-arn "$arn" \
       >/dev/null 2>&1 || warn "could not delete $arn"
