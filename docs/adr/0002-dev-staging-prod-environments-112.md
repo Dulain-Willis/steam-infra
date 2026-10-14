@@ -211,3 +211,14 @@ environment-specific leaks back into the base.
   without a corresponding deny case is a gap the test suite is built to
   surface, per the invariant that every deny target must also be some
   identity's allow target.
+- **The first live attempt at #121's cold run proved this point against
+  itself.** It reached Stage 2's `grant_read_deny_check` — the deny-only
+  check `scripts/lib/grant_check.sh` added for the five "no grant of any
+  kind" claims above that no write-probe reaches — and failed there with the
+  check unable to report its own safe outcome. `grant_check_test.sh`'s 17
+  scenarios, all green against a stubbed Snowflake, had not exercised the
+  path a real account's error shape took. This is the testing section's bet
+  paying off exactly as designed: the end-to-end seam against live
+  infrastructure caught what the isolated unit test structurally could not,
+  one stage before anything in this ADR's design — staging, promotion, the
+  CI flow — had ever been exercised live at all.
