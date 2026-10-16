@@ -143,6 +143,25 @@ selfheal() {
   done <"$STATE/ingresses.desired"
 }
 
+# resync_root_children (#124): `root` renders every child Application from
+# argocd/apps/*.yaml, so for as long as root's *own* automated sync is still
+# on, root's selfHeal keeps re-applying that rendering and puts the
+# syncPolicy straight back on any child a patch just removed. Modelled on
+# every stub call, same as selfheal above, because the real controller
+# reconciles continuously -- this is the timing dependency #124 found live,
+# and the 20-scenario suite passed over it because every stub here applies a
+# patch and keeps it rather than fighting back.
+resync_root_children() {
+  [[ "$(awk '$1 == "root" { print $3 }' "$STATE/apps")" == auto ]] || return 0
+  local app fin sync
+  while read -r app fin sync; do
+    [[ -n "${app:-}" ]] || continue
+    [[ "$app" == root ]] && continue
+    [[ "$sync" == frozen ]] || continue
+    set_field apps "$app" 3 auto
+  done <"$STATE/apps"
+}
+
 # Recompute what Kubernetes/AWS would do on their own after any mutation.
 reconcile() {
   local ns name vol st fin out=""
@@ -174,6 +193,7 @@ source "$(dirname "$0")/fakelib.sh"
 log "kubectl $*"
 inject_failure "$@"
 selfheal
+resync_root_children
 verb="$1"; kind="${2:-}"; shift 2 2>/dev/null || true
 ns="$(argval -n "$@" || true)"
 name="${1:-}"
@@ -815,6 +835,31 @@ check "took more than one poll for the volume to actually detach" yes \
 check "the volume was swept once it detached, not left behind" yes \
   "$(logged 'ec2 delete-volume')"
 check "all volumes are gone" 0 "$(count volumes)"
+
+# ---------------------------------------------------------------------------
+# 21. #124: root re-syncs its children faster than a single patch pass
+#     converges, restoring the syncPolicy each child just had removed, for as
+#     long as root's own automated sync is still live. The fix must freeze and
+#     confirm root before trusting any child's patch, and must not depend on
+#     root happening to be first in whatever order the lister returns. Modelled
+#     here as the fake `kubectl patch` on a child being reverted by the stub's
+#     next call unless root was already frozen -- the real timing dependency
+#     the 20-scenario suite passed over, because every stub above applies a
+#     patch and keeps it.
+# ---------------------------------------------------------------------------
+scenario "21. a child's freeze is reverted unless root was frozen first (#124)"
+new_state
+# Root last in the listing, not first: a real API list is under no
+# obligation to put it there, and the fix must not depend on it being so.
+{ tail -n +2 "$STATE/apps"; head -n1 "$STATE/apps"; } >"$STATE/apps.tmp" && mv "$STATE/apps.tmp" "$STATE/apps"
+run_stage 02-argocd
+check "stage 2 exits 0" 0 $?
+check "root was frozen before any child's patch was trusted" yes \
+  "$(before 'patch application.argoproj.io/root' 'patch application.argoproj.io/argocd')"
+check "it did not report the freeze incomplete" no \
+  "$(grep -qF 'automated sync is still enabled on:' "$STATE/out" && echo yes || echo no)"
+check "every Application ended up frozen, not just root" 0 \
+  "$(awk '$3 != "frozen"' "$STATE/apps" | wc -l | tr -d ' ')"
 
 if ((failures)); then
   printf '\n%d assertion(s) failed\n' "$failures" >&2

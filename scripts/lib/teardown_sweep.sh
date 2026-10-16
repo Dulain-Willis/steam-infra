@@ -280,33 +280,81 @@ delete_project_load_balancers() {
 # changes only spec.syncPolicy. Nothing is deleted here, and the cascade
 # finalizer is unaffected (deletion propagation is the finalizer's job, not
 # syncPolicy's).
+#
+# #124: freezing every Application in one pass, in whatever order the lister
+# happens to return them, is not enough. `root` renders every child
+# Application from argocd/apps/*.yaml, so for as long as root's *own*
+# automated sync is live, root's selfHeal keeps re-applying that rendering and
+# puts the syncPolicy straight back on any child the loop just patched — the
+# live teardown needed three hand-run passes before that stopped. So root is
+# frozen and confirmed *first*, on its own, before any child patch is trusted;
+# only once root itself is off does patching a child mean anything. Then the
+# child freeze is looped (bounded, same clear failure as before if it never
+# converges), because even with root frozen a single pass is not guaranteed
+# to land.
+#
 # It is verified by its POST-CONDITION, not by counting what it patched. The
 # first version checked neither: the listing swallowed its own failure, so a
 # transient API or RBAC error yielded zero iterations and it still reported
 # `ok "automated sync disabled on 0 Application(s)"` and returned 0 — then
 # Stage 2 walked into drain_albs with selfHeal live on every Application,
 # which is exactly #122 reopened, unattended. A count would also have missed
-# a patch that silently failed while the listing worked. So: the listing's
-# status is checked, and afterwards every Application is re-read and any one
-# still carrying spec.syncPolicy.automated is fatal.
+# a patch that silently failed while the listing worked. So: every listing's
+# status is checked, and after every patch pass every Application is re-read
+# and any one still carrying spec.syncPolicy.automated is fatal.
+: "${FREEZE_ARGOCD_MAX_PASSES:=5}"
+
+# _argocd_still_automated: space-separated names of Applications that still
+# carry spec.syncPolicy.automated, right now. The one post-condition read,
+# shared by the root check and every pass of the child loop below so the two
+# can never drift apart. Non-empty name wrapped in spaces on success so a
+# caller can test membership with `[[ " $still " == *" name "* ]]`; returns
+# non-zero (nothing printed) if the listing itself failed.
+_argocd_still_automated() {
+  local out
+  out=$(kubectl get applications -n argocd \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.syncPolicy.automated}{"\n"}{end}') \
+    || return 1
+  awk -F= '$2 != "" { printf "%s ", $1 }' <<<"$out"
+}
+
 freeze_argocd_sync() {
-  local apps app still frozen=0
+  local apps children app still frozen pass
+
   apps=$(kubectl get applications -n argocd -o name) \
     || fail "could not list Applications in argocd — refusing to delete anything while selfHeal may still be live (see #122)"
+  frozen=$(printf '%s\n' "$apps" | grep -c .)
+  children=$(grep -v '/root$' <<<"$apps")
 
-  for app in $apps; do
-    kubectl patch "$app" -n argocd --type merge -p '{"spec":{"syncPolicy":null}}' >/dev/null 2>&1 \
-      || warn "could not disable automated sync on $app"
-    frozen=$((frozen + 1))
-  done
-
-  # The assertion that makes this check mean something: ask Kubernetes what is
-  # actually true now. An Application with syncPolicy removed renders empty
-  # here; one that still has it renders map[prune:true selfHeal:true].
-  still=$(kubectl get applications -n argocd \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.spec.syncPolicy.automated}{"\n"}{end}') \
+  # Freeze root first and confirm it before touching any child: while root's
+  # own automated sync is still on, every child patch below is racing it, and
+  # nothing can converge until root itself is off.
+  kubectl patch application.argoproj.io/root -n argocd --type merge \
+    -p '{"spec":{"syncPolicy":null}}' >/dev/null 2>&1 \
+    || warn "could not disable automated sync on application.argoproj.io/root"
+  still=$(_argocd_still_automated) \
     || fail "could not re-read Applications to confirm automated sync is off — refusing to delete anything (see #122)"
-  still=$(awk -F= '$2 != "" { printf "%s ", $1 }' <<<"$still")
+  [[ " $still " != *" root "* ]] \
+    || fail "automated sync is still enabled on: root — ArgoCD would recreate anything deleted below, so stopping here rather than fighting it (see #122)"
+
+  # Now loop the child freeze until the post-condition holds. Bounded: if it
+  # never converges, this fails exactly as loudly as the single-pass version
+  # did, rather than spinning forever.
+  still=""
+  for pass in $(seq 1 "$FREEZE_ARGOCD_MAX_PASSES"); do
+    for app in $children; do
+      kubectl patch "$app" -n argocd --type merge -p '{"spec":{"syncPolicy":null}}' >/dev/null 2>&1 \
+        || warn "could not disable automated sync on $app"
+    done
+
+    # The assertion that makes this check mean something: ask Kubernetes what
+    # is actually true now. An Application with syncPolicy removed renders
+    # empty here; one that still has it renders map[prune:true selfHeal:true].
+    still=$(_argocd_still_automated) \
+      || fail "could not re-read Applications to confirm automated sync is off — refusing to delete anything (see #122)"
+    [[ -n "$still" ]] || break
+    (( pass < FREEZE_ARGOCD_MAX_PASSES )) && sleep "$TEARDOWN_POLL_INTERVAL"
+  done
   [[ -z "$still" ]] \
     || fail "automated sync is still enabled on: ${still% } — ArgoCD would recreate anything deleted below, so stopping here rather than fighting it (see #122)"
 
