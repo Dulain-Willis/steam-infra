@@ -138,9 +138,14 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
   # ServerResponseError: Not Found -- invisible to the Ingress checks above,
   # to ArgoCD health, and to pod readiness, because the api-server itself
   # comes up fine either way.
-  base_url=$(awk '/name: AIRFLOW__API__BASE_URL/{getline; print; exit}' <<<"$rendered" | grep -oE '/\S+' | tr -d '"')
-  exec_url=$(awk '/name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL/{getline; print; exit}' <<<"$rendered" | grep -oE 'http\S+' | tr -d '"')
-  exec_path=$(grep -oE '^https?://[^/]+(/.*)$' <<<"$exec_url" | sed -E 's#^https?://[^/]+##')
+  # `|| true` on each pipeline: a missing env var (the exact regression this
+  # check exists to catch) makes the `grep -oE` match nothing and exit 1,
+  # and under `set -o pipefail` that would abort the whole script right here
+  # -- skipping this environment's own FAIL message below and every check
+  # after it, silently. The diagnostic lives in the if/elif below instead.
+  base_url=$(awk '/name: AIRFLOW__API__BASE_URL/{getline; print; exit}' <<<"$rendered" | grep -oE '/\S+' | tr -d '"' || true)
+  exec_url=$(awk '/name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL/{getline; print; exit}' <<<"$rendered" | grep -oE 'http\S+' | tr -d '"' || true)
+  exec_path=$(grep -oE '^https?://[^/]+(/.*)$' <<<"$exec_url" | sed -E 's#^https?://[^/]+##' || true)
   if [[ -z $base_url || -z $exec_url ]]; then
     echo "FAIL  $env_name: could not read AIRFLOW__API__BASE_URL and/or AIRFLOW__CORE__EXECUTION_API_SERVER_URL from the render"
     status=1
