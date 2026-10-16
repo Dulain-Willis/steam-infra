@@ -93,6 +93,18 @@ extraEnv: |
   - name: AIRFLOW__API__BASE_URL
     value: "/airflow-staging"
 
+  # AIRFLOW__API__BASE_URL above mounts the *entire* FastAPI app --
+  # including the task execution API -- under the prefix, but the chart's
+  # default execution_api_server_url (http://airflow-staging-api-server:8080/execution/)
+  # does not know about that prefix. Without this, workers PATCH
+  # /execution/task-instances/<id>/run, the api-server only serves that
+  # under /airflow-staging/execution/..., and every task fails instantly
+  # with ServerResponseError: Not Found (#125). Service name confirmed
+  # against `helm template`'s rendered Service, not assumed from the
+  # release name.
+  - name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL
+    value: "http://airflow-staging-api-server:8080/airflow-staging/execution/"
+
 # Prod's `/airflow` is a *prefix* of this path, and both rules are
 # `pathType: Prefix` on the same ALB -- so prod's rule matches every
 # /airflow-staging request too, and whichever is evaluated first wins.
