@@ -127,6 +127,29 @@ for overlay in "$VALUES_DIR"/values-*.yaml; do
   else
     echo "ok    $env_name's Ingress: $path, $order"
   fi
+
+  # #125: AIRFLOW__API__BASE_URL mounts the *entire* FastAPI app -- including
+  # the task execution API -- under that prefix, but execution_api_server_url
+  # does not pick the prefix up on its own (it is a separate setting, and the
+  # chart default is unprefixed). Every container carries both env vars
+  # identically, so the first match is the whole render's answer. This caught
+  # #125 for real: workers PATCHed /execution/... while the api-server only
+  # served /airflow/execution/..., and every task failed instantly with
+  # ServerResponseError: Not Found -- invisible to the Ingress checks above,
+  # to ArgoCD health, and to pod readiness, because the api-server itself
+  # comes up fine either way.
+  base_url=$(awk '/name: AIRFLOW__API__BASE_URL/{getline; print; exit}' <<<"$rendered" | grep -oE '/\S+' | tr -d '"')
+  exec_url=$(awk '/name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL/{getline; print; exit}' <<<"$rendered" | grep -oE 'http\S+' | tr -d '"')
+  exec_path=$(grep -oE '^https?://[^/]+(/.*)$' <<<"$exec_url" | sed -E 's#^https?://[^/]+##')
+  if [[ -z $base_url || -z $exec_url ]]; then
+    echo "FAIL  $env_name: could not read AIRFLOW__API__BASE_URL and/or AIRFLOW__CORE__EXECUTION_API_SERVER_URL from the render"
+    status=1
+  elif [[ $exec_path != "$base_url"* ]]; then
+    echo "FAIL  $env_name's execution_api_server_url path ('$exec_path') does not start with its base_url ('$base_url') -- workers will PATCH the unprefixed path while the api-server serves it under the prefix, and every task fails with ServerResponseError: Not Found (#125)"
+    status=1
+  else
+    echo "ok    $env_name's execution_api_server_url ($exec_url) is prefixed with its base_url ($base_url)"
+  fi
 done
 
 # --- the shared-ALB and prod-likeness invariants across environments --------

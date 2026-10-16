@@ -73,6 +73,17 @@ extraEnv: |
   - name: AIRFLOW__API__BASE_URL
     value: "/airflow"
 
+  # AIRFLOW__API__BASE_URL above mounts the *entire* FastAPI app --
+  # including the task execution API -- under the prefix, but the chart's
+  # default execution_api_server_url (http://airflow-api-server:8080/execution/)
+  # does not know about that prefix. Without this, workers PATCH
+  # /execution/task-instances/<id>/run, the api-server only serves that
+  # under /airflow/execution/..., and every task fails instantly with
+  # ServerResponseError: Not Found (#125). Service name confirmed against
+  # `helm template`'s rendered Service, not assumed from the release name.
+  - name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL
+    value: "http://airflow-api-server:8080/airflow/execution/"
+
 # `/airflow` is a *prefix* of staging's `/airflow-staging`, so the two ALB
 # rules overlap and whichever is evaluated first wins. group.order is a
 # per-rule annotation (not one of the exclusive group-wide ones), lower is
