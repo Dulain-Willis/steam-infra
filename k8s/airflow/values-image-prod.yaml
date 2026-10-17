@@ -11,4 +11,4 @@
 # README.md, "Promote to prod". So every tag here has run in staging first,
 # and prod is never a rebuild (#112 story 31).
 defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
-defaultAirflowTag: b063300-f91cca1-38993029748
+defaultAirflowTag: b063300-f91cca1-38993087037
