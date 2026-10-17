@@ -16,7 +16,7 @@ spec:
           - $values/k8s/airflow/values-prod.yaml
           - $values/k8s/airflow/values-image-prod.yaml
     - repoURL: https://github.com/Dulain-Willis/steam-infra.git
-      targetRevision: spec-112-environments
+      targetRevision: main
       ref: values
   destination:
     server: https://kubernetes.default.svc

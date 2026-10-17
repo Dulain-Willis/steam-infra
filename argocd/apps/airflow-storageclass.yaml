@@ -7,7 +7,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/Dulain-Willis/steam-infra.git
-    targetRevision: spec-112-environments
+    targetRevision: main
     path: k8s/airflow/storageclass
   destination:
     server: https://kubernetes.default.svc
