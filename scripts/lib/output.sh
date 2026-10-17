@@ -4,7 +4,9 @@
 #
 # Stages run as separate `bash` processes (so "run one stage on its own"
 # works, #85), so stage() takes its position explicitly rather than counting
-# a shared in-process counter.
+# a shared in-process counter. The total is counted from the stage script's
+# own directory, so adding a stage doesn't mean editing every other one
+# (#113).
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   BOLD=$(tput bold); DIM=$(tput dim); RESET=$(tput sgr0)
@@ -15,8 +17,19 @@ fi
 
 banner() { printf '\n%s%s  %s%s\n\n' "$BOLD" "$BLUE" "$1" "$RESET"; }
 
-# stage N TOTAL "Name"
-stage() { printf '\n%s%s▸ Stage %s/%s · %s%s\n' "$BOLD" "$BLUE" "$1" "$2" "$3" "$RESET"; }
+# stage N "Name" — N is the stage's own number; the total is however many
+# numbered scripts sit next to the calling stage script. BASH_SOURCE's last
+# element is the outermost script, i.e. the stage script itself, however
+# many lib files it has sourced.
+#
+# The glob is the same one bringup.sh/teardown.sh enumerate with, so what
+# runs and what the total counts can't disagree.
+stage() {
+  local dir total
+  dir=$(dirname "${BASH_SOURCE[${#BASH_SOURCE[@]} - 1]}")
+  total=$(find "$dir" -maxdepth 1 -name '[0-9][0-9]-*.sh' | wc -l | tr -d ' ')
+  printf '\n%s%s▸ Stage %s/%s · %s%s\n' "$BOLD" "$BLUE" "$1" "$total" "$2" "$RESET"
+}
 
 say()  { printf '  %s\n' "$1"; }
 note() { printf '  %s%s%s\n' "$DIM" "$1" "$RESET"; }

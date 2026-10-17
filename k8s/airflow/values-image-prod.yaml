@@ -1,0 +1,14 @@
+# Prod's image (bakes in the steam-analytics dbt project, see the
+# steam-orchestration repo's Dockerfile). Kept in its own file, one per
+# environment, separate from values.yaml and values-prod.yaml, so that the
+# only machine that writes it only ever touches these two lines.
+#
+# Nothing bumps this automatically. New images land in staging
+# (values-image-staging.yaml, written by steam-orchestration's
+# build-and-push.yml), and reach prod only through the "Promote to prod"
+# workflow -- .github/workflows/promote-to-prod.yml -- which copies staging's
+# tag here as a PR. Merging that PR is the approval and the deploy; see
+# README.md, "Promote to prod". So every tag here has run in staging first,
+# and prod is never a rebuild (#112 story 31).
+defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
+defaultAirflowTag: 46d85e2e6baf78611ef01367b8a6e77dcbeb4762

@@ -1,7 +1,0 @@
-# Custom image (bakes in the steam-analytics dbt project, see the
-# steam-orchestration repo's Dockerfile). Bumped automatically by a bot
-# commit from steam-orchestration's build-and-push.yml workflow on every
-# new image build -- kept in its own file, separate from values.yaml, so
-# that automated commit only ever touches these two lines.
-defaultAirflowRepository: ghcr.io/dulain-willis/steam-orchestration
-defaultAirflowTag: 46d85e2e6baf78611ef01367b8a6e77dcbeb4762

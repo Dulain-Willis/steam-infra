@@ -1,52 +1,23 @@
-# Env vars for the airflow Helm release (terraform/airflow.tf). Chart's
-# top-level `env` applies to scheduler/dag-processor/worker/triggerer, but
-# its JSON schema only allows {name, value} -- no valueFrom/secretKeyRef.
-# extraEnv is a raw templated string, unvalidated, so secretKeyRef works there.
+# Base Helm values for every Airflow release on this cluster. Shared only --
+# nothing environment-specific belongs in this file.
 #
-# Image (defaultAirflowRepository/defaultAirflowTag) lives in
-# values-image.yaml, not here -- that file is machine-owned (bumped by a bot
-# commit from steam-orchestration's CI on every new image build) and kept
-# separate so the bot's commits never touch anything hand-maintained below.
-
-extraEnv: |
-  - name: SNOWFLAKE_ACCOUNT
-    valueFrom:
-      secretKeyRef:
-        name: snowflake-account
-        key: account
-
-  - name: SNOWFLAKE_USER
-    valueFrom:
-      secretKeyRef:
-        name: snowflake-user
-        key: user
-
-  - name: SNOWFLAKE_ROLE
-    value: ACCOUNTADMIN
-
-  - name: SNOWFLAKE_WAREHOUSE
-    value: COMPUTE_WH
-
-  - name: SNOWFLAKE_DATABASE
-    value: STEAM_PROJECT
-
-  - name: PIPELINE_ALERT_EMAIL
-    valueFrom:
-      secretKeyRef:
-        name: airflow-alert-email
-        key: email
-
-  - name: SNOWFLAKE_PRIVATE_KEY
-    valueFrom:
-      secretKeyRef:
-        name: snowflake-keypair
-        key: private_key
-
-  # Served under /airflow on the shared internal ALB (#107) — tells the
-  # API server (Airflow 3's renamed webserver) to generate links/redirects
-  # with that prefix instead of assuming it's mounted at /.
-  - name: AIRFLOW__API__BASE_URL
-    value: "/airflow"
+# A release is assembled from three values files, in this order (later wins):
+#
+#   values.yaml              this file, shared by every environment
+#   values-<env>.yaml        the environment overlay (prod: values-prod.yaml)
+#   values-image-<env>.yaml  the image, machine-owned (bumped by a bot commit
+#                            from steam-orchestration's build-and-push.yml)
+#
+# The list lives in each environment's ArgoCD Application (argocd/apps/).
+#
+# Why `extraEnv` is wholly in the overlay and not split across the two:
+# the chart's `env` is schema-validated to {name, value} only, so secretKeyRef
+# has to go in `extraEnv`, which is a raw templated *string*. Helm replaces
+# strings (and lists) wholesale rather than merging them, so a base `extraEnv`
+# plus an overlay `extraEnv` would mean the base's is silently discarded. The
+# only safe split is therefore all-or-nothing, and since most of the block is
+# environment-specific, all of it lives in the overlay. Everything below is a
+# map, which Helm *does* merge key-by-key, so overlays extend it additively.
 
 # dbt ls against Snowflake (cold TLS+auth+full manifest parse) exceeds the
 # chart's default 30s dagbag_import_timeout -- DAG never renders, no error
@@ -83,15 +54,66 @@ migrateDatabaseJob:
 
 # Internal ALB ingress (#107) -- grouped with argocd.yaml's Ingress onto one
 # shared ALB via group.name. internal/ip/HTTP-only annotations mirror #106's
-# locked-in decisions (no public exposure, no TLS/domain).
+# locked-in decisions (no public exposure, no TLS/domain). `scheme` is an
+# *exclusive* IngressGroup annotation: every member of the group must agree on
+# it or the whole group stops reconciling and no member is updated -- which is
+# the reason it lives here rather than in each overlay.
+#
+# `enabled`, `path` and `alb.ingress.kubernetes.io/group.order` are all set in
+# the overlay: /airflow is a prefix of /airflow-staging, so the two rules
+# overlap and the order they are evaluated in decides which one wins.
+#
+# `enabled` is in the overlay rather than here *because* `path` has to be, so
+# that the two fail together. With `enabled: true` in the base, an overlay
+# that forgot `path` would render an Ingress claiming `/` at the default order
+# 0 into this group -- which is evaluated before prod's /airflow rule and
+# swallows argocd's too, breaking every member instead of only itself. With
+# both in the overlay, forgetting them renders no Ingress at all: that
+# environment has no URL, and nothing else on the ALB notices.
 ingress:
   apiServer:
-    enabled: true
     ingressClassName: alb
-    path: /airflow
     pathType: Prefix
     annotations:
       alb.ingress.kubernetes.io/group.name: steam-infra-admin
       alb.ingress.kubernetes.io/scheme: internal
       alb.ingress.kubernetes.io/target-type: ip
       alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+# #118's Q7.10 diagnosed this and left it alone for want of staging evidence;
+# #123 is that evidence. Unset, the chart generates fernetKey/apiSecretKey/
+# jwtSecret/the redis password+broker URL per release. Three of those five
+# (fernet key, redis password, redis connection) are "helm.sh/hook:
+# pre-install" / "before-hook-creation" -- translated by ArgoCD into a PreSync
+# hook recreated on every sync. With one Airflow release that was tolerable
+# (just session churn); with two, ArgoCD's hook-completion semantics never
+# resolved for the second release and bring-up's health gate failed waiting
+# on it forever (#123). The other two (api secret key, jwt secret) carry no
+# hook but are plain Sync resources whose desired content is a fresh random
+# value on every render, which selfHeal then rewrites every sync -- same
+# churn, no deadlock.
+#
+# Pinning all five *names* removes every one of those Secrets from the
+# chart's render (the templates are gated on "if not .Values.<x>SecretName" /
+# "if not .Values.redis.passwordSecretName" / "if not
+# .Values.data.brokerUrlSecretName") -- so there is nothing left for ArgoCD
+# to wait on or rewrite. bring-up/stages/05-cluster.sh creates the Secrets
+# themselves, per namespace, alongside snowflake-keypair/snowflake-account/
+# snowflake-user/airflow-alert-email. The names are environment-independent:
+# each Secret is namespace-local, so every environment uses the same name
+# with different (namespace-scoped) contents -- identical to how those four
+# already work.
+#
+# Note: the chart's real key for the JWT secret's name override is
+# `jwtSecretName`, not `jwtSecretSecretName` -- verified against
+# `helm show values apache-airflow/airflow --version 1.22.0` and the
+# chart's templates/_helpers.yaml (`jwtSecretName` is read in three places;
+# `jwtSecretSecretName` does not exist in the chart at all and would have
+# silently done nothing).
+fernetKeySecretName: fernet-key
+apiSecretKeySecretName: api-secret-key
+jwtSecretName: jwt-secret
+redis:
+  passwordSecretName: redis-password
+data:
+  brokerUrlSecretName: broker-url

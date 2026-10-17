@@ -1,5 +1,24 @@
 # steam-infra
 
+## Single-tenant AWS account
+
+This project owns its AWS account outright. Nothing else runs in it, in any
+region. Two things depend on that and would be unsafe without it:
+
+- **Teardown's `$0` verify** (`scripts/teardown/stages/06-verify.sh`) checks
+  account-wide in the project region rather than matching tags, so it also
+  catches resources Kubernetes created that Terraform never knew about —
+  dynamically provisioned EBS volumes in particular.
+- **Teardown's orphan sweeps** (`scripts/lib/teardown_sweep.sh`) identify
+  CSI-provisioned EBS volumes by the PVC namespace the driver tags them with,
+  not by cluster: there is no cluster-identifying tag on them to use. A second
+  EKS cluster in this region with an `airflow` or `kafka` namespace would be
+  in scope of that sweep.
+
+Both files cite this section. If the account ever stops being single-tenant,
+they are the two places to revisit — and `cluster_volumes`' `ponytail:` note
+records the proper fix (set `--k8s-tag-cluster-id` on the CSI addon).
+
 ## Glossary
 
 **Application** — an ArgoCD custom resource (`argoproj.io/v1alpha1
@@ -30,7 +49,11 @@ Snowflake database. dbt gets an environment only because Airflow runs it.
 - **prod** — the production Airflow on EKS, building into `STEAM_PROD`.
 
 **Promotion** — moving an already-built image tag from staging to prod.
-The image is never rebuilt between environments.
+The image is never rebuilt between environments. Mechanically: the
+**Promote to prod** workflow opens a PR setting prod's image tag to
+staging's, and merging that PR is both the approval and the deploy
+(README.md, "Promote to prod"). Rollback is the same thing with an older
+tag.
 
 See `docs/adr/0001-argocd-reverses-iac-boundary-28.md` for why ArgoCD owns
 this layer instead of Terraform or hand-run `kubectl`.
