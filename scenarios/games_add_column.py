@@ -3,10 +3,12 @@ nullable column to the games table without telling anyone, and the
 warehouse has to absorb it.
 
 Reversible by design, via the GAMES_ADD_COLUMN_REVERSE env var — this is
-the one alter table in the repo, and it needs an undo path that doesn't
-require a teardown. Run forward: scripts/scenarios/run.sh games_add_column.
-Run in reverse: GAMES_ADD_COLUMN_REVERSE=true scripts/scenarios/run.sh
-games_add_column.
+the only alter table run live against an already-running database (the
+one other alter table in the repo, db/schema.sql's campaign_id FK, only
+ever runs once, during a from-scratch bring-up), and it needs an undo
+path that doesn't require a teardown. Run forward:
+scripts/scenarios/run.sh games_add_column. Run in reverse:
+GAMES_ADD_COLUMN_REVERSE=true scripts/scenarios/run.sh games_add_column.
 
 db/schema.sql deliberately does NOT gain this column — see the written
 record (scenarios/records/games_add_column.md) for why.
