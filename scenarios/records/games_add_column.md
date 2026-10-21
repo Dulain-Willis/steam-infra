@@ -70,13 +70,17 @@ for anything broken by this scenario.
 
 ## Why `db/schema.sql` does NOT get this column
 
-`db/schema.sql` is the from-scratch bring-up script
-(`scripts/lib/schema_guard.py` applies it only when `public.games`/
-`public.users` don't already exist — see `infra.md`). Adding
-`early_access` there would mean every *fresh* bring-up starts with the
-column already present, coordinated through source control like any
-other schema change — which defeats the entire premise of this
-scenario. The fault being modelled is specifically an upstream change
+`db/schema.sql` is the from-scratch bring-up script. It's applied in one
+shot by `scripts/lib/schema_guard.py`'s `cmd_apply_schema`, gated by
+`schema_applied()` (`schema_guard.py:39-42`), which checks only
+`to_regclass('public.users') is not null` — the presence of `public.users`
+stands in for "has this database already had `schema.sql` applied," since
+`schema.sql` runs as one unsplittable `create table ...; create table
+...;` script with no per-table idempotency (`schema_guard.py:9-11`).
+Adding `early_access` to the `games` table in `schema.sql` would mean
+every *fresh* bring-up starts with the column already present,
+coordinated through source control like any other schema change — which
+defeats the entire premise of this scenario. The fault being modelled is specifically an upstream change
 *the warehouse never heard about*: one that lands via a live `alter
 table` against a running database, not through a reviewed schema file.
 If `schema.sql` also carried the column, a teardown + fresh bring-up
