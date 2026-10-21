@@ -304,15 +304,16 @@ def concurrent_player_snapshot_tick(cur, clock, rng):
     return game_ids
 
 
-def _open_close_tick(cur, clock, rng, table, start_col, end_col, duplicate_rate=0.0):
+def _open_close_tick(cur, clock, rng, table, start_col, end_col):
     """Shared open/close pattern for playtime_sessions, family_shares, and
     wishlist_items: with an open row available, roughly half the time close
     it; otherwise (or if none is open) start a new one. Returns the row id.
 
-    On the start branch, rolls dirty.should_duplicate at duplicate_rate: a
-    hit inserts a second, literal copy of the just-started row (distinct id,
-    same user/game/start time) — a start-event heartbeat/add duplicated
-    upstream. Never rolled on the close branch.
+    On the start branch, rolls dirty.should_duplicate against table's
+    configured rate (dirty.DUPLICATE_RATES): a hit inserts a second, literal
+    copy of the just-started row (distinct id, same user/game/start time) —
+    a start-event heartbeat/add duplicated upstream. Never rolled on the
+    close branch.
     """
     cur.execute(
         f"select id from {table} where {end_col} is null order by random() limit 1"
@@ -338,7 +339,7 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col, duplicate_rate=
     cur.execute(insert_sql, params)
     row_id = cur.fetchone()[0]
 
-    if dirty.should_duplicate(rng, duplicate_rate, table):
+    if dirty.should_duplicate(rng, table):
         cur.execute(insert_sql, params)
         cur.fetchone()
 
@@ -350,10 +351,7 @@ def playtime_session_tick(cur, clock, rng):
     set, ended_at null) or, with an open session available, closes it
     (ended_at set). Returns the session id.
     """
-    return _open_close_tick(
-        cur, clock, rng, "playtime_sessions", "started_at", "ended_at",
-        duplicate_rate=dirty.PLAYTIME_START_DUPLICATE_RATE,
-    )
+    return _open_close_tick(cur, clock, rng, "playtime_sessions", "started_at", "ended_at")
 
 
 def wishlist_item_tick(cur, clock, rng):
@@ -361,10 +359,7 @@ def wishlist_item_tick(cur, clock, rng):
     removed_at null) or, with an open item available, removes it
     (removed_at set). Returns the item id.
     """
-    return _open_close_tick(
-        cur, clock, rng, "wishlist_items", "added_at", "removed_at",
-        duplicate_rate=dirty.WISHLIST_ADD_DUPLICATE_RATE,
-    )
+    return _open_close_tick(cur, clock, rng, "wishlist_items", "added_at", "removed_at")
 
 
 def family_share_tick(cur, clock, rng):
