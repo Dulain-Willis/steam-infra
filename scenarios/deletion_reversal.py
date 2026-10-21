@@ -11,6 +11,11 @@ verification sets the override to a handful of seconds instead. The
 comparison is done against the database's own now(), not any generator
 clock, so it holds however the override is set.
 
+The env-with-code-default read follows #130's convention
+(generator/dirty.py's `_env_float()`) -- duplicated locally rather than
+imported, same as fake_cursor.py duplicates generator/test_generator.py's
+FakeCursor, so scenario code never reaches into the generator package.
+
 Run via scripts/scenarios/run.sh deletion_reversal.
 """
 
@@ -20,7 +25,15 @@ import os
 logger = logging.getLogger(__name__)
 
 USERNAME_ENV_VAR = "DELETION_REQUEST_USERNAME"
-GRACE_PERIOD_SECONDS = float(os.environ.get("DELETION_GRACE_PERIOD_SECONDS", str(30 * 24 * 3600)))
+
+
+def _env_float(name, default):
+    """Reads NAME from the environment as a float, falling back to the
+    given code default (a string) when unset. See module docstring."""
+    return float(os.environ.get(name, default))
+
+
+GRACE_PERIOD_SECONDS = _env_float("DELETION_GRACE_PERIOD_SECONDS", str(30 * 24 * 3600))
 
 
 def run(cur):
