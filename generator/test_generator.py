@@ -1,18 +1,12 @@
 import json
 import random
 from collections import Counter
-<<<<<<< HEAD
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 import dirty
 import generator
-=======
-from datetime import date, datetime, timezone
-
-import dirty
->>>>>>> origin/ticket-139
 from generator import (
     CLIENT_EVENT_REFERRERS,
     EVENT_HANDLERS,

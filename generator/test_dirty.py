@@ -5,12 +5,9 @@ from datetime import date, datetime, timezone
 import dirty
 from dirty import (
     DUPLICATE_RATES,
-<<<<<<< HEAD
     ORPHAN_LATE_ARRIVAL_RATE,
     ORPHAN_NEVER_ARRIVES_RATE,
-=======
     PAYMENT_METHOD_NEW_ONSET_DATE,
->>>>>>> origin/ticket-139
     PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS,
     REFUND_REASON_NULL_RATE,
     jittered,

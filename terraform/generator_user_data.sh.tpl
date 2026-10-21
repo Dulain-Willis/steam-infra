@@ -40,11 +40,8 @@ docker run -d \
   -e PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS="${purchase_recorded_at_jitter_max_seconds}" \
   -e REVIEW_RECORDED_AT_JITTER_MAX_SECONDS="${review_recorded_at_jitter_max_seconds}" \
   -e SNAPSHOT_RECORDED_AT_JITTER_MAX_SECONDS="${snapshot_recorded_at_jitter_max_seconds}" \
-<<<<<<< HEAD
   -e ORPHAN_NEVER_ARRIVES_RATE="${orphan_never_arrives_rate}" \
   -e ORPHAN_LATE_ARRIVAL_RATE="${orphan_late_arrival_rate}" \
   -e ORPHAN_LATE_ARRIVAL_DELAY_SECONDS="${orphan_late_arrival_delay_seconds}" \
-=======
   -e PAYMENT_METHOD_NEW_ONSET_DATE="${payment_method_new_onset_date}" \
->>>>>>> origin/ticket-139
   steam-generator
