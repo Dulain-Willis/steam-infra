@@ -2,11 +2,11 @@ import random
 from collections import Counter
 from datetime import datetime, timezone
 
+import dirty
 from dirty import (
-    DUPLICATE_SKIP_LIST,
-    PLAYTIME_START_DUPLICATE_RATE,
+    DUPLICATE_RATES,
+    PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS,
     REFUND_REASON_NULL_RATE,
-    WISHLIST_ADD_DUPLICATE_RATE,
     jittered,
     maybe_null,
     should_duplicate,
@@ -42,19 +42,16 @@ def test_jittered_adds_a_nonnegative_offset_after_the_event_time():
     assert (result - event_time).total_seconds() == 30
 
 
-def test_should_duplicate_rolls_against_the_given_rate_for_allowed_tables():
-    assert should_duplicate(AlwaysRng(0.0), WISHLIST_ADD_DUPLICATE_RATE, "wishlist_items") is True
-    assert should_duplicate(AlwaysRng(0.999), WISHLIST_ADD_DUPLICATE_RATE, "wishlist_items") is False
-    assert should_duplicate(AlwaysRng(0.0), PLAYTIME_START_DUPLICATE_RATE, "playtime_sessions") is True
+def test_should_duplicate_rolls_against_the_configured_rate_for_a_listed_table():
+    assert should_duplicate(AlwaysRng(0.0), "wishlist_items") is True
+    assert should_duplicate(AlwaysRng(0.999), "wishlist_items") is False
+    assert should_duplicate(AlwaysRng(0.0), "playtime_sessions") is True
 
 
-def test_should_duplicate_never_hits_for_skip_listed_tables_even_on_a_forced_roll():
-    for table in DUPLICATE_SKIP_LIST:
-        assert should_duplicate(AlwaysRng(0.0), 1.0, table) is False
-
-
-def test_duplicate_skip_list_covers_the_ownership_and_identity_tables():
-    assert DUPLICATE_SKIP_LIST == {"purchases", "refunds", "key_redemptions", "gifts", "reviews"}
+def test_should_duplicate_never_hits_for_a_table_with_no_configured_rate():
+    for table in ("purchases", "refunds", "key_redemptions", "gifts", "reviews", "some_future_table"):
+        assert table not in DUPLICATE_RATES
+        assert should_duplicate(AlwaysRng(0.0), table) is False
 
 
 def test_maybe_null_rate_roughly_matches_over_many_rolls():
@@ -66,13 +63,27 @@ def test_maybe_null_rate_roughly_matches_over_many_rolls():
 
 def test_should_duplicate_rate_roughly_matches_over_many_rolls():
     rng = random.Random(42)
-    hits = [should_duplicate(rng, WISHLIST_ADD_DUPLICATE_RATE, "wishlist_items") for _ in range(20000)]
+    hits = [should_duplicate(rng, "wishlist_items") for _ in range(20000)]
     hit_rate = sum(hits) / len(hits)
     assert 0.015 < hit_rate < 0.025
 
 
 def test_should_duplicate_playtime_rate_roughly_matches_over_many_rolls():
     rng = random.Random(42)
-    hits = [should_duplicate(rng, PLAYTIME_START_DUPLICATE_RATE, "playtime_sessions") for _ in range(20000)]
+    hits = [should_duplicate(rng, "playtime_sessions") for _ in range(20000)]
     hit_rate = sum(hits) / len(hits)
     assert 0.005 < hit_rate < 0.015
+
+
+def test_purchase_recorded_at_jitter_max_seconds_has_a_sane_code_default():
+    assert PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS == 30
+
+
+def test_env_float_falls_back_to_the_code_default_when_unset(monkeypatch):
+    monkeypatch.delenv("SOME_UNSET_KNOB", raising=False)
+    assert dirty._env_float("SOME_UNSET_KNOB", "0.42") == 0.42
+
+
+def test_env_float_reads_an_override_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SOME_KNOB", "7.5")
+    assert dirty._env_float("SOME_KNOB", "0.42") == 7.5
