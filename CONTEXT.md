@@ -48,6 +48,20 @@ Snowflake database. dbt gets an environment only because Airflow runs it.
   layer**.
 - **prod** — the production Airflow on EKS, building into `STEAM_PROD`.
 
+**Orphan event** — a `client_events` row whose `user_id` does not (yet, or
+ever) exist in `users`. `client_events.user_id` has no foreign key to
+`users` (#140, [ADR
+0003](docs/adr/0003-drop-client-events-user-fk-140.md)) — events and
+accounts model two separate services with separate databases, so that
+integrity can't be database-enforced and is instead warehouse-enforced
+(monitored as an inner-join discrepancy in steam-analytics, not ruled out
+by Postgres). The generator forces two orphan flavours at separate rates:
+the user **never arrives** (its id never appears in `users`), or the user
+**arrives late** (its id appears in `users` after a configurable delay,
+during which the join is wrong before it's right). *Avoid* "orphan" alone
+for this — this project also uses "orphan" for leaked AWS resources in
+teardown; in a `CONTEXT.md`/schema context it always means this.
+
 **Promotion** — moving an already-built image tag from staging to prod.
 The image is never rebuilt between environments. Mechanically: the
 **Promote to prod** workflow opens a PR setting prod's image tag to

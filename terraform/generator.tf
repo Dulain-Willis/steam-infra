@@ -69,6 +69,9 @@ resource "aws_instance" "generator" {
     purchase_recorded_at_jitter_max_seconds = var.purchase_recorded_at_jitter_max_seconds
     review_recorded_at_jitter_max_seconds   = var.review_recorded_at_jitter_max_seconds
     snapshot_recorded_at_jitter_max_seconds = var.snapshot_recorded_at_jitter_max_seconds
+    orphan_never_arrives_rate               = var.orphan_never_arrives_rate
+    orphan_late_arrival_rate                = var.orphan_late_arrival_rate
+    orphan_late_arrival_delay_seconds       = var.orphan_late_arrival_delay_seconds
   }))
 
   tags = {

@@ -46,3 +46,21 @@ variable "snapshot_recorded_at_jitter_max_seconds" {
   type        = string
   default     = "240"
 }
+
+variable "orphan_never_arrives_rate" {
+  description = "ORPHAN_NEVER_ARRIVES_RATE override for the generator container"
+  type        = string
+  default     = "0.01"
+}
+
+variable "orphan_late_arrival_rate" {
+  description = "ORPHAN_LATE_ARRIVAL_RATE override for the generator container"
+  type        = string
+  default     = "0.03"
+}
+
+variable "orphan_late_arrival_delay_seconds" {
+  description = "ORPHAN_LATE_ARRIVAL_DELAY_SECONDS override for the generator container"
+  type        = string
+  default     = "90"
+}

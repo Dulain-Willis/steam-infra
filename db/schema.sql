@@ -2,6 +2,10 @@
 -- PKs: uuid (gen_random_uuid()) | money: integer cents | timestamps: timestamptz UTC
 -- Event tables carry both an event-time column and recorded_at (when OLTP wrote the row)
 -- Revocation/end pattern: nullable *_at column, never delete rows
+-- FK convention: every cross-table reference is a database-enforced FK, with
+-- one deliberate exception -- client_events.user_id, which crosses the
+-- events/accounts service boundary this schema models and is
+-- warehouse-enforced instead (#140, docs/adr/0003-drop-client-events-user-fk-140.md)
 
 create extension if not exists pgcrypto;
 
@@ -189,10 +193,17 @@ create index on concurrent_player_snapshots (game_id, snapshot_at);
 -- land. props is the open-ended VARIANT bag downstream — referrer,
 -- campaign_id, etc. — matching the comment-only convention used elsewhere
 -- (steam-analytics#12).
+--
+-- user_id has no FK to users (#140, docs/adr/0003-drop-client-events-user-fk-140.md):
+-- in the real architecture this models, events and accounts are owned by
+-- separate services with separate databases, so no cross-service key could
+-- be enforced. Integrity here is warehouse-enforced (monitored), not
+-- database-enforced. The column stays non-nullable; the generator can still
+-- emit a user_id that never appears in `users`, or one that does, later.
 create table client_events (
     event_id uuid primary key default gen_random_uuid(),
     occurred_at timestamptz not null,                 -- event time; recorded_at is when OLTP wrote the row
-    user_id uuid not null references users(id),        -- non-nullable: no pre-signup anonymous browsing
+    user_id uuid not null,                              -- non-nullable, but not FK-enforced -- see comment above
     session_id uuid,                                   -- browsing session, distinct from playtime_sessions; nullable
     game_id uuid references games(id),                 -- null for store-wide events (store_page_view)
     event_name text not null check (event_name in (

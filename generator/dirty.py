@@ -48,6 +48,30 @@ DUPLICATE_RATES = {
 }
 
 
+# client_events.user_id orphans (#140): the FK to users is gone, so two
+# flavours of "parent not there yet" become possible. Two plain knobs, not a
+# per-table dict -- orphaning only ever applies to this one table/column, so
+# there's no shape to generalize (don't add a second DUPLICATE_RATES-style
+# dict for this).
+ORPHAN_NEVER_ARRIVES_RATE = _env_float("ORPHAN_NEVER_ARRIVES_RATE", "0.01")
+ORPHAN_LATE_ARRIVAL_RATE = _env_float("ORPHAN_LATE_ARRIVAL_RATE", "0.03")
+ORPHAN_LATE_ARRIVAL_DELAY_SECONDS = _env_float("ORPHAN_LATE_ARRIVAL_DELAY_SECONDS", "90")
+
+
+def orphan_flavor(rng):
+    """Rolls once against a shared budget for client_events' two orphan
+    parent flavours: ORPHAN_NEVER_ARRIVES_RATE (checked first) for a parent
+    that never arrives, then ORPHAN_LATE_ARRIVAL_RATE for a parent that
+    arrives ORPHAN_LATE_ARRIVAL_DELAY_SECONDS later. Returns "never", "late",
+    or None for a normal, already-seeded parent."""
+    roll = rng.random()
+    if roll < ORPHAN_NEVER_ARRIVES_RATE:
+        return "never"
+    if roll < ORPHAN_NEVER_ARRIVES_RATE + ORPHAN_LATE_ARRIVAL_RATE:
+        return "late"
+    return None
+
+
 def maybe_null(rng, rate, value):
     """Rolls to drop value to None at the given rate; otherwise passes it through."""
     return None if rng.random() < rate else value
