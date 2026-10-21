@@ -434,6 +434,29 @@ def funnel_session(rng, advance_p=FUNNEL_ADVANCE_P):
     return steps
 
 
+# Process-local queue of late-arriving orphan parents (#140): (user_id,
+# due_at) pairs, drained by _emit_due_late_users once clock() reaches
+# due_at. ponytail: not persisted -- a generator restart mid-delay just
+# means that one late parent never shows up. Fine for a dev-data generator
+# exercising a warehouse join, not a durability system.
+_pending_late_users = []
+
+
+def _emit_due_late_users(cur, now):
+    """Inserts a bare users row for every pending late-arriving orphan
+    parent (#140) whose delay has elapsed by now, and drops it from the
+    queue. Called every tick so a scheduled late parent shows up without a
+    dedicated scheduler."""
+    global _pending_late_users
+    due = [u for u in _pending_late_users if u[1] <= now]
+    _pending_late_users = [u for u in _pending_late_users if u[1] > now]
+    for user_id, _ in due:
+        cur.execute(
+            "insert into users (id, username, email) values (%s, %s, %s)",
+            (user_id, f"orphan-{user_id}", f"{user_id}@steam-orphan.invalid"),
+        )
+
+
 def client_events_tick(cur, clock, rng):
     """Emits one browsing session as an ordered run of client_events rows:
     a random user browsing a random game, walking the funnel until they drop
@@ -441,6 +464,11 @@ def client_events_tick(cur, clock, rng):
     later step carries the game. props carries the session's referrer and,
     for ~CLIENT_EVENT_CAMPAIGN_CHANCE of sessions, a campaign_id drawn from
     marketing_campaigns. Returns the session id.
+
+    client_events.user_id has no FK to users (#140), so a roll against
+    dirty.orphan_flavor() can swap the seeded user_id out for a synthetic one
+    that either never appears in users ("never"), or appears
+    ORPHAN_LATE_ARRIVAL_DELAY_SECONDS later via _pending_late_users ("late").
     """
     cur.execute("select id from users order by random() limit 1")
     user_id = cur.fetchone()[0]
@@ -448,6 +476,13 @@ def client_events_tick(cur, clock, rng):
     game_id = cur.fetchone()[0]
     cur.execute("select id from marketing_campaigns order by random() limit 1")
     campaign_row = cur.fetchone()
+
+    orphan = dirty.orphan_flavor(rng)
+    if orphan is not None:
+        user_id = str(uuid.UUID(int=rng.getrandbits(128)))
+        if orphan == "late":
+            due_at = clock() + timedelta(seconds=dirty.ORPHAN_LATE_ARRIVAL_DELAY_SECONDS)
+            _pending_late_users.append((user_id, due_at))
 
     campaign_id = (
         str(campaign_row[0])
@@ -491,7 +526,10 @@ EVENT_HANDLERS = {
 
 
 def tick(cur, clock, rng):
-    """Picks an event type by weight and executes it. Returns the type name."""
+    """Picks an event type by weight and executes it. Returns the type name.
+    Also flushes any late-arriving orphan parent (#140) whose delay has
+    elapsed, independent of which event type this tick picks."""
+    _emit_due_late_users(cur, clock())
     event_type = pick_event_type(rng)
     EVENT_HANDLERS[event_type](cur, clock, rng)
     return event_type

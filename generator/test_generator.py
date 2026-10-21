@@ -1,8 +1,12 @@
 import json
 import random
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+import pytest
+
+import dirty
+import generator
 from generator import (
     CLIENT_EVENT_REFERRERS,
     EVENT_HANDLERS,
@@ -51,6 +55,16 @@ class FakeCursor:
 
 def fixed_clock():
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _reset_pending_late_users():
+    # generator._pending_late_users is process-local state (#140); clear it
+    # around every test so one test's scheduled late orphan can't leak into
+    # another's assertions.
+    generator._pending_late_users = []
+    yield
+    generator._pending_late_users = []
 
 
 def test_pick_event_type_covers_all_registered_event_types():
@@ -573,7 +587,12 @@ def test_funnel_session_produces_monotonic_drop_off():
     assert counts[-1] < counts[0] // 2         # but far fewer than start it
 
 
-def test_client_events_tick_writes_one_ordered_row_per_funnel_step():
+def test_client_events_tick_writes_one_ordered_row_per_funnel_step(monkeypatch):
+    # This test's concern is funnel/campaign behavior, not orphans -- pin
+    # both orphan rates to 0 so ForcedRoll(0.0)'s all-hits forcing doesn't
+    # also roll an orphan (see the dedicated orphan tests below).
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
     cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
 
     session_id = client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
@@ -609,7 +628,9 @@ def test_client_events_tick_omits_campaign_id_when_roll_misses():
     assert props["campaign_id"] is None
 
 
-def test_client_events_tick_handles_no_campaigns_seeded():
+def test_client_events_tick_handles_no_campaigns_seeded(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
     cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), None])
 
     client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
@@ -617,3 +638,69 @@ def test_client_events_tick_handles_no_campaigns_seeded():
     inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
     props = json.loads(inserts[0][5])
     assert props["campaign_id"] is None
+
+
+def test_client_events_tick_emits_a_never_arriving_orphan_on_a_forced_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    user_ids = {p[1] for p in inserts}
+    assert user_ids != {"user-1"}          # the seeded user was swapped out for an orphan id
+    assert len(user_ids) == 1              # every row in the session shares the one orphan id
+    assert not any("insert into users" in sql for sql, _ in cur.calls)
+    assert generator._pending_late_users == []   # "never" schedules nothing
+
+
+def test_client_events_tick_emits_a_late_arriving_orphan_on_a_forced_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_DELAY_SECONDS", 90)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    user_ids = {p[1] for p in inserts}
+    assert user_ids != {"user-1"}
+    assert not any("insert into users" in sql for sql, _ in cur.calls)   # not yet -- it's scheduled
+
+    [(orphan_user_id, due_at)] = generator._pending_late_users
+    assert orphan_user_id in user_ids
+    assert due_at == fixed_clock() + timedelta(seconds=90)
+
+
+def test_emit_due_late_users_is_a_noop_before_the_delay_elapses():
+    cur = FakeCursor()
+    generator._pending_late_users = [("orphan-1", fixed_clock() + timedelta(seconds=90))]
+
+    generator._emit_due_late_users(cur, fixed_clock())
+
+    assert cur.calls == []
+    assert generator._pending_late_users == [("orphan-1", fixed_clock() + timedelta(seconds=90))]
+
+
+def test_emit_due_late_users_inserts_the_parent_once_due_and_drains_it():
+    cur = FakeCursor()
+    due_at = fixed_clock() + timedelta(seconds=90)
+    generator._pending_late_users = [("orphan-1", due_at)]
+
+    generator._emit_due_late_users(cur, due_at)
+
+    inserts = [p for sql, p in cur.calls if "insert into users" in sql]
+    assert len(inserts) == 1
+    assert inserts[0][0] == "orphan-1"
+    assert generator._pending_late_users == []   # drained, not re-inserted on a later tick
+
+
+def test_tick_flushes_due_late_users_before_dispatching():
+    due_at = fixed_clock()
+    generator._pending_late_users = [("orphan-1", due_at)]
+    cur = FakeCursor(fetchone_values=[("u",), ("g",), ("p",)])
+
+    tick(cur, fixed_clock, random.Random(1))   # seed 1 lands on "purchase"
+
+    assert any("insert into users" in sql for sql, _ in cur.calls)
+    assert generator._pending_late_users == []

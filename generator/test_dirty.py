@@ -5,10 +5,13 @@ from datetime import datetime, timezone
 import dirty
 from dirty import (
     DUPLICATE_RATES,
+    ORPHAN_LATE_ARRIVAL_RATE,
+    ORPHAN_NEVER_ARRIVES_RATE,
     PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS,
     REFUND_REASON_NULL_RATE,
     jittered,
     maybe_null,
+    orphan_flavor,
     should_duplicate,
 )
 
@@ -77,6 +80,29 @@ def test_should_duplicate_playtime_rate_roughly_matches_over_many_rolls():
 
 def test_purchase_recorded_at_jitter_max_seconds_has_a_sane_code_default():
     assert PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS == 30
+
+
+def test_orphan_flavor_returns_never_within_the_never_arrives_budget():
+    assert orphan_flavor(AlwaysRng(0.0)) == "never"
+
+
+def test_orphan_flavor_returns_late_within_the_late_arrival_budget():
+    # just past the never-arrives budget, still within never+late
+    midpoint = ORPHAN_NEVER_ARRIVES_RATE + ORPHAN_LATE_ARRIVAL_RATE / 2
+    assert orphan_flavor(AlwaysRng(midpoint)) == "late"
+
+
+def test_orphan_flavor_returns_none_outside_both_budgets():
+    assert orphan_flavor(AlwaysRng(0.999)) is None
+
+
+def test_orphan_rates_roughly_match_over_many_rolls():
+    rng = random.Random(42)
+    flavors = Counter(orphan_flavor(rng) for _ in range(40000))
+    never_rate = flavors["never"] / 40000
+    late_rate = flavors["late"] / 40000
+    assert abs(never_rate - ORPHAN_NEVER_ARRIVES_RATE) < 0.01
+    assert abs(late_rate - ORPHAN_LATE_ARRIVAL_RATE) < 0.01
 
 
 def test_env_float_falls_back_to_the_code_default_when_unset(monkeypatch):
