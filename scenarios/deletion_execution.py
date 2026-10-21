@@ -85,25 +85,39 @@ def execute_deletion(cur, username, grace_period_seconds=GRACE_PERIOD_SECONDS):
             "refusing to erase"
         )
 
-    hard_deleted = {}
-    for table in HARD_DELETE_TABLES:
-        cur.execute(f"delete from {table} where user_id = %s returning 1;", (user_id,))
-        hard_deleted[table] = len(cur.fetchall())
+    # The caller's connection runs autocommit (see scenarios/_run.py), so
+    # without an explicit transaction each delete/update below commits on
+    # its own -- a dropped tunnel partway through would leave tier 1 done
+    # and tier 2 not, a silent partial erasure. begin/commit/rollback as
+    # plain statements wrap all of it as one unit: either every tier-1
+    # table is hard-deleted and the user row is anonymized, or none of it
+    # is.
+    cur.execute("begin;")
+    try:
+        hard_deleted = {}
+        for table in HARD_DELETE_TABLES:
+            cur.execute(f"delete from {table} where user_id = %s returning 1;", (user_id,))
+            hard_deleted[table] = len(cur.fetchall())
 
-    tombstone_username = f"deleted-user-{user_id}"
-    tombstone_email = f"deleted-{user_id}@erased.invalid"
-    cur.execute(
-        """
-        update users
-        set username = %s,
-            email = %s,
-            country = null
-        where id = %s
-        returning id;
-        """,
-        (tombstone_username, tombstone_email, user_id),
-    )
-    cur.fetchone()
+        tombstone_username = f"deleted-user-{user_id}"
+        tombstone_email = f"deleted-{user_id}@erased.invalid"
+        cur.execute(
+            """
+            update users
+            set username = %s,
+                email = %s,
+                country = null
+            where id = %s
+            returning id;
+            """,
+            (tombstone_username, tombstone_email, user_id),
+        )
+        cur.fetchone()
+    except Exception:
+        cur.execute("rollback;")
+        raise
+    else:
+        cur.execute("commit;")
 
     logger.info(
         "%s: erased (%.0fs into a %.0fs grace period) -- hard deleted %s, "

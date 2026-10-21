@@ -65,8 +65,8 @@ waiting out 30 real days.
   before/after confirms tier 3 was left alone.
 - Downstream: the landing tables carrying delete-derived rows for the
   erased primary keys, and the next `dbt build`'s marts no longer
-  containing them -- see `/Users/dulainslaptop/projects/steam/.spec-129-notes/live/143.md`
-  for the exact queries.
+  containing them -- the orchestrator's live-verification procedure for
+  this ticket (outside this repo) has the exact queries.
 
 ## Handling
 

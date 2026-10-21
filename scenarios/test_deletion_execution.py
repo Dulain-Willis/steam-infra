@@ -50,13 +50,21 @@ def test_execute_deletion_hard_deletes_behavioural_rows_and_anonymizes_the_user(
         assert params == (USER_ID,)
 
     # The user row is anonymized in place, not deleted -- foreign keys stay intact.
-    update_sql, update_params = cur.calls[-1]
-    assert "update users" in update_sql
+    update_calls = [c for c in cur.calls if "update users" in c[0].lower()]
+    assert len(update_calls) == 1
+    update_sql, update_params = update_calls[0]
     assert "where id = %s" in update_sql
     tombstone_username, tombstone_email, updated_user_id = update_params
     assert USER_ID in tombstone_username
     assert USER_ID in tombstone_email
     assert updated_user_id == USER_ID
+
+    # The hard deletes and the anonymize both happen inside one explicit
+    # transaction (the caller's connection runs autocommit -- see
+    # scenarios/_run.py -- so without this a dropped connection partway
+    # through could leave tier 1 done and tier 2 not).
+    assert cur.calls[1][0].strip() == "begin;"
+    assert cur.calls[-1][0].strip() == "commit;"
 
 
 def test_execute_deletion_raises_if_no_pending_request():
