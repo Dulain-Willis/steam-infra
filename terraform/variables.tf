@@ -29,6 +29,12 @@ variable "duplicate_rate_playtime_sessions" {
   default     = "0.01"
 }
 
+variable "duplicate_rate_purchases" {
+  description = "DUPLICATE_RATE_PURCHASES override for the generator container"
+  type        = string
+  default     = "0.02"
+}
+
 variable "purchase_recorded_at_jitter_max_seconds" {
   description = "PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS override for the generator container"
   type        = string

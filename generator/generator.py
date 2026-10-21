@@ -94,19 +94,36 @@ def pick_event_type(rng, weights=EVENT_WEIGHTS):
 
 def _insert_purchase(cur, clock, rng, user_id, game_id):
     """Shared by purchase_tick and gift_send_tick: writes a purchases row
-    for the given buyer/game and returns its id."""
+    for the given buyer/game and returns its id.
+
+    Rolls dirty.should_duplicate against purchases' configured rate
+    (dirty.DUPLICATE_RATES): a hit inserts a second, literal copy of the
+    same charge -- distinct id, identical business key (user/game/amount/
+    purchased_at) -- the double-submitted-charge shape. Only the first
+    insert's id is returned, so exactly one downstream ownership_grants row
+    ever points at this purchase; the duplicate row is a second, unlinked
+    purchases row that over-counts revenue without affecting ownership.
+    """
     purchased_at = clock()
     amount_cents = rng.randint(999, 5999)
     payment_method = rng.choice(PAYMENT_METHODS)
     recorded_at = dirty.jittered(purchased_at, rng, dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)
 
-    cur.execute(
+    insert_sql = (
         "insert into purchases "
         "(user_id, game_id, amount_cents, currency, payment_method, purchased_at, recorded_at) "
-        "values (%s, %s, %s, %s, %s, %s, %s) returning id",
-        (user_id, game_id, amount_cents, CURRENCY, payment_method, purchased_at, recorded_at),
+        "values (%s, %s, %s, %s, %s, %s, %s) returning id"
     )
-    return cur.fetchone()[0], purchased_at
+    params = (user_id, game_id, amount_cents, CURRENCY, payment_method, purchased_at, recorded_at)
+
+    cur.execute(insert_sql, params)
+    purchase_id = cur.fetchone()[0]
+
+    if dirty.should_duplicate(rng, "purchases"):
+        cur.execute(insert_sql, params)
+        cur.fetchone()
+
+    return purchase_id, purchased_at
 
 
 def purchase_tick(cur, clock, rng):

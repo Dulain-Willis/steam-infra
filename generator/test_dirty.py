@@ -46,10 +46,15 @@ def test_should_duplicate_rolls_against_the_configured_rate_for_a_listed_table()
     assert should_duplicate(AlwaysRng(0.0), "wishlist_items") is True
     assert should_duplicate(AlwaysRng(0.999), "wishlist_items") is False
     assert should_duplicate(AlwaysRng(0.0), "playtime_sessions") is True
+    assert should_duplicate(AlwaysRng(0.0), "purchases") is True
+    assert should_duplicate(AlwaysRng(0.999), "purchases") is False
 
 
 def test_should_duplicate_never_hits_for_a_table_with_no_configured_rate():
-    for table in ("purchases", "refunds", "key_redemptions", "gifts", "reviews", "some_future_table"):
+    # reviews/game_prices/key_redemptions carry a unique constraint
+    # (db/schema.sql) that makes a literal duplicate row physically
+    # impossible, so none of them get a rate.
+    for table in ("refunds", "key_redemptions", "gifts", "reviews", "game_prices", "some_future_table"):
         assert table not in DUPLICATE_RATES
         assert should_duplicate(AlwaysRng(0.0), table) is False
 
@@ -73,6 +78,13 @@ def test_should_duplicate_playtime_rate_roughly_matches_over_many_rolls():
     hits = [should_duplicate(rng, "playtime_sessions") for _ in range(20000)]
     hit_rate = sum(hits) / len(hits)
     assert 0.005 < hit_rate < 0.015
+
+
+def test_should_duplicate_purchases_rate_roughly_matches_over_many_rolls():
+    rng = random.Random(42)
+    hits = [should_duplicate(rng, "purchases") for _ in range(20000)]
+    hit_rate = sum(hits) / len(hits)
+    assert 0.015 < hit_rate < 0.025
 
 
 def test_purchase_recorded_at_jitter_max_seconds_has_a_sane_code_default():
