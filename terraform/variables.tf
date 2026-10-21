@@ -46,3 +46,9 @@ variable "snapshot_recorded_at_jitter_max_seconds" {
   type        = string
   default     = "240"
 }
+
+variable "payment_method_new_onset_date" {
+  description = "PAYMENT_METHOD_NEW_ONSET_DATE override for the generator container"
+  type        = string
+  default     = "2099-01-01"
+}

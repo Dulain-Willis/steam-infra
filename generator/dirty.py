@@ -13,7 +13,7 @@ from tests -- same discipline as tick()'s clock/rng injection.
 """
 
 import os
-from datetime import timedelta
+from datetime import date, timedelta
 
 
 def _env_float(name, default):
@@ -22,6 +22,14 @@ def _env_float(name, default):
     unset. The one mechanism every injection knob in this module goes
     through."""
     return float(os.environ.get(name, default))
+
+
+def _env_date(name, default):
+    """Reads NAME from the environment as an ISO (YYYY-MM-DD) date, falling
+    back to the given code default (a string, matching os.environ's own
+    type) when unset. Sibling to _env_float for knobs that are a dated
+    switch rather than a rate -- #139's onset date is the first of these."""
+    return date.fromisoformat(os.environ.get(name, default))
 
 
 REFUND_REASON_NULL_RATE = _env_float("REFUND_REASON_NULL_RATE", "0.15")
@@ -34,6 +42,14 @@ REVIEW_RECORDED_AT_JITTER_MAX_SECONDS = _env_float(
 )
 SNAPSHOT_RECORDED_AT_JITTER_MAX_SECONDS = _env_float(
     "SNAPSHOT_RECORDED_AT_JITTER_MAX_SECONDS", "240"  # "a few minutes"
+)
+
+# A new payment method starts appearing once purchased_at crosses this date
+# -- a dated switch (like a product launch), not a probability roll. Default
+# is far enough out that default generator output is unaffected; override to
+# force the new value to appear at bring-up without rebuilding the image.
+PAYMENT_METHOD_NEW_ONSET_DATE = _env_date(
+    "PAYMENT_METHOD_NEW_ONSET_DATE", "2099-01-01"
 )
 
 # Per-table duplicate rates: explicit configuration only, one env var per
@@ -64,3 +80,10 @@ def should_duplicate(rng, table):
     DUPLICATE_RATES. A table absent from that dict has rate 0, so it never
     duplicates."""
     return rng.random() < DUPLICATE_RATES.get(table, 0.0)
+
+
+def should_emit_new_payment_method(purchased_at):
+    """True once purchased_at's date is on or after
+    PAYMENT_METHOD_NEW_ONSET_DATE. A dated switch, not a roll -- no rng
+    involved, so the same purchased_at always gets the same answer."""
+    return purchased_at.date() >= PAYMENT_METHOD_NEW_ONSET_DATE

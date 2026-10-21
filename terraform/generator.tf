@@ -69,6 +69,7 @@ resource "aws_instance" "generator" {
     purchase_recorded_at_jitter_max_seconds = var.purchase_recorded_at_jitter_max_seconds
     review_recorded_at_jitter_max_seconds   = var.review_recorded_at_jitter_max_seconds
     snapshot_recorded_at_jitter_max_seconds = var.snapshot_recorded_at_jitter_max_seconds
+    payment_method_new_onset_date           = var.payment_method_new_onset_date
   }))
 
   tags = {

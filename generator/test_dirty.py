@@ -1,15 +1,17 @@
 import random
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import dirty
 from dirty import (
     DUPLICATE_RATES,
+    PAYMENT_METHOD_NEW_ONSET_DATE,
     PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS,
     REFUND_REASON_NULL_RATE,
     jittered,
     maybe_null,
     should_duplicate,
+    should_emit_new_payment_method,
 )
 
 
@@ -87,3 +89,35 @@ def test_env_float_falls_back_to_the_code_default_when_unset(monkeypatch):
 def test_env_float_reads_an_override_from_the_environment(monkeypatch):
     monkeypatch.setenv("SOME_KNOB", "7.5")
     assert dirty._env_float("SOME_KNOB", "0.42") == 7.5
+
+
+def test_env_date_falls_back_to_the_code_default_when_unset(monkeypatch):
+    monkeypatch.delenv("SOME_UNSET_DATE_KNOB", raising=False)
+    assert dirty._env_date("SOME_UNSET_DATE_KNOB", "2099-01-01") == date(2099, 1, 1)
+
+
+def test_env_date_reads_an_override_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SOME_DATE_KNOB", "2026-03-15")
+    assert dirty._env_date("SOME_DATE_KNOB", "2099-01-01") == date(2026, 3, 15)
+
+
+def test_payment_method_new_onset_date_has_a_sane_code_default():
+    # Far enough out that default generator output never changes.
+    assert PAYMENT_METHOD_NEW_ONSET_DATE == date(2099, 1, 1)
+
+
+def test_should_emit_new_payment_method_is_false_before_the_onset_date():
+    purchased_at = datetime(2098, 12, 31, tzinfo=timezone.utc)
+    assert should_emit_new_payment_method(purchased_at) is False
+
+
+def test_should_emit_new_payment_method_is_true_on_and_after_the_onset_date(monkeypatch):
+    monkeypatch.setattr(dirty, "PAYMENT_METHOD_NEW_ONSET_DATE", date(2026, 6, 1))
+
+    before = datetime(2026, 5, 31, 23, 59, 59, tzinfo=timezone.utc)
+    on_the_day = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    after = datetime(2026, 6, 2, tzinfo=timezone.utc)
+
+    assert should_emit_new_payment_method(before) is False
+    assert should_emit_new_payment_method(on_the_day) is True
+    assert should_emit_new_payment_method(after) is True

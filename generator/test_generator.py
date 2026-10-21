@@ -1,14 +1,18 @@
 import json
 import random
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
+import dirty
 from generator import (
     CLIENT_EVENT_REFERRERS,
     EVENT_HANDLERS,
     EVENT_WEIGHTS,
     FUNNEL_STEPS,
+    PAYMENT_METHOD_NEW,
+    PAYMENT_METHODS,
     REFUND_REASONS,
+    _insert_purchase,
     client_events_tick,
     concurrent_player_snapshot_tick,
     family_share_tick,
@@ -117,6 +121,36 @@ def test_purchase_tick_produces_exactly_one_ownership_grant_for_the_purchase():
 
     purchase_calls = [(sql, params) for sql, params in cur.calls if "insert into purchases" in sql]
     assert len(purchase_calls) == 1
+
+
+def _payment_method_from_insert(cur):
+    sql, params = next(c for c in cur.calls if "insert into purchases" in c[0])
+    return params[4]
+
+
+def test_insert_purchase_never_emits_the_new_payment_method_before_onset_date():
+    rng = random.Random(42)
+    seen = set()
+    for _ in range(200):
+        cur = FakeCursor(fetchone_values=[("purchase-1",)])
+        _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
+        seen.add(_payment_method_from_insert(cur))
+
+    assert seen == set(PAYMENT_METHODS)
+    assert PAYMENT_METHOD_NEW not in seen
+
+
+def test_insert_purchase_emits_the_new_payment_method_on_and_after_onset_date(monkeypatch):
+    monkeypatch.setattr(dirty, "PAYMENT_METHOD_NEW_ONSET_DATE", date(2020, 1, 1))
+
+    rng = random.Random(42)
+    seen = set()
+    for _ in range(200):
+        cur = FakeCursor(fetchone_values=[("purchase-1",)])
+        _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
+        seen.add(_payment_method_from_insert(cur))
+
+    assert seen == set(PAYMENT_METHODS) | {PAYMENT_METHOD_NEW}
 
 
 def test_gift_send_tick_creates_purchase_and_open_gift_row():
