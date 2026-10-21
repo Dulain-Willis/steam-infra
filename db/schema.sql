@@ -24,6 +24,7 @@ create table users (
     email text not null unique,
     country text,                       -- ISO 3166-1 alpha-2, nullable; buyer's country, for revenue-by-region downstream (steam-analytics#11)
     campaign_id uuid,                    -- first-touch attribution: nullable FK to marketing_campaigns, set once at signup, never re-attributed. NULL = organic/direct. FK added below (users precedes marketing_campaigns). (steam-analytics#14)
+    deletion_requested_at timestamptz,   -- compliance erasure request; nullable, unset by default. Set by scenarios/deletion_request.py, cleared by scenarios/deletion_reversal.py if reversed within the grace period. NULL = no pending request; nothing is deleted at this stage (#142; #143 does the eventual hard delete).
     created_at timestamptz not null default now()
 );
 
