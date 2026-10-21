@@ -55,5 +55,30 @@ staging's, and merging that PR is both the approval and the deploy
 (README.md, "Promote to prod"). Rollback is the same thing with an older
 tag.
 
+**Schema evolution** — a change to a source table's shape made directly
+against the live database (an `alter table`), outside any coordinated
+release. *Additive* schema evolution (a new nullable column — the only
+kind `scenarios/games_add_column.py` models, #144) needs no coordinated
+release at all: Snowflake's own schema-evolution feature
+(`snowflake.enable.schematization=true`, steam-analytics ADR 0001) picks
+up the new column in the landing table automatically on the connector's
+next change event, and every `stg` model keeps building unchanged
+because it already names its output columns explicitly rather than
+`select *`-ing the landing table. A *breaking* schema evolution (a
+rename, a type change, a drop) is a deliberate follow-up, out of scope
+here — see **contract** below for how steam-analytics catches that case
+instead of silently reshaping a table someone depends on.
+
+**Contract** — a declared, enforced shape (column names and types) on a
+dbt model's output, set via `config: {contract: {enforced: true}}` plus a
+`data_type` on every output column in that model's schema yml
+(steam-analytics). Declared only on *published* mart models (see that
+repo's `CONTEXT.md`) — the layer other teams and BI tools build on. A
+model change that would alter a contracted column's name or type fails
+the build instead of landing silently; an *additive* source-side change
+(see **schema evolution** above) never trips it, because a contract only
+constrains columns a model actually declares, not every column that
+happens to exist upstream.
+
 See `docs/adr/0001-argocd-reverses-iac-boundary-28.md` for why ArgoCD owns
 this layer instead of Terraform or hand-run `kubectl`.
