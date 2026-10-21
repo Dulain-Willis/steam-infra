@@ -1,0 +1,88 @@
+import importlib
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fake_cursor import FakeCursor
+
+import deletion_execution
+from deletion_execution import HARD_DELETE_TABLES, execute_deletion
+
+USER_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def test_execute_deletion_raises_before_the_grace_period_has_elapsed():
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    requested_at = now - timedelta(days=1)
+    cur = FakeCursor(fetchone_values=[(USER_ID, requested_at, now)])
+
+    with pytest.raises(ValueError, match="grace period"):
+        execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)
+
+    # Nothing beyond the initial select is attempted once refused.
+    assert len(cur.calls) == 1
+
+
+def test_execute_deletion_hard_deletes_behavioural_rows_and_anonymizes_the_user():
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    requested_at = now - timedelta(days=31)
+    cur = FakeCursor(
+        fetchone_values=[(USER_ID, requested_at, now), (USER_ID,)],
+        # One fetchall() per HARD_DELETE_TABLES entry, in order.
+        fetchall_values=[[(1,), (2,)], [(1,)], []],
+    )
+
+    result = execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)
+
+    assert result["username"] == "alice"
+    assert result["user_id"] == USER_ID
+    assert result["hard_deleted"] == {
+        "client_events": 2,
+        "playtime_sessions": 1,
+        "wishlist_items": 0,
+    }
+    assert result["anonymized"] is True
+
+    # Behavioural tables are hard-deleted by user_id, in the declared order.
+    delete_calls = [c for c in cur.calls if c[0].strip().lower().startswith("delete")]
+    assert len(delete_calls) == len(HARD_DELETE_TABLES)
+    for table, (sql, params) in zip(HARD_DELETE_TABLES, delete_calls):
+        assert f"delete from {table} where user_id" in sql
+        assert params == (USER_ID,)
+
+    # The user row is anonymized in place, not deleted -- foreign keys stay intact.
+    update_sql, update_params = cur.calls[-1]
+    assert "update users" in update_sql
+    assert "where id = %s" in update_sql
+    tombstone_username, tombstone_email, updated_user_id = update_params
+    assert USER_ID in tombstone_username
+    assert USER_ID in tombstone_email
+    assert updated_user_id == USER_ID
+
+
+def test_execute_deletion_raises_if_no_pending_request():
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    cur = FakeCursor(fetchone_values=[(USER_ID, None, now)])
+
+    with pytest.raises(ValueError, match="no pending deletion request"):
+        execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)
+
+
+def test_execute_deletion_raises_for_unknown_user():
+    cur = FakeCursor(fetchone_values=[None])
+
+    with pytest.raises(ValueError, match="no such user"):
+        execute_deletion(cur, "ghost", grace_period_seconds=30 * 86400)
+
+
+def test_grace_period_default_is_thirty_days_and_is_env_overridable(monkeypatch):
+    monkeypatch.delenv("DELETION_GRACE_PERIOD_SECONDS", raising=False)
+    importlib.reload(deletion_execution)
+    assert deletion_execution.GRACE_PERIOD_SECONDS == 30 * 24 * 3600
+
+    monkeypatch.setenv("DELETION_GRACE_PERIOD_SECONDS", "5")
+    importlib.reload(deletion_execution)
+    assert deletion_execution.GRACE_PERIOD_SECONDS == 5.0
+
+    # Leave the module in its default state for any later test in this process.
+    monkeypatch.delenv("DELETION_GRACE_PERIOD_SECONDS", raising=False)
+    importlib.reload(deletion_execution)

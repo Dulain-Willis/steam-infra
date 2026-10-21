@@ -1,7 +1,10 @@
 -- Fake Steam OLTP schema
 -- PKs: uuid (gen_random_uuid()) | money: integer cents | timestamps: timestamptz UTC
 -- Event tables carry both an event-time column and recorded_at (when OLTP wrote the row)
--- Revocation/end pattern: nullable *_at column, never delete rows
+-- Revocation/end pattern: nullable *_at column, never delete rows -- soft delete for all
+-- business state. The one exception: hard delete only for compliance erasure
+-- (scenarios/deletion_execution.py, #143) and retention purge. See
+-- docs/adr/0004-three-tier-compliance-erasure-143.md.
 
 create extension if not exists pgcrypto;
 

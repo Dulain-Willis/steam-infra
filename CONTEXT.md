@@ -69,3 +69,17 @@ soft-delete convention (`db/schema.sql:4`, "Revocation/end pattern:
 nullable `*_at` column, never delete rows") rather than a contradiction
 of it. See `scenarios/deletion_request.py` (marks the request) and
 `scenarios/deletion_reversal.py` (reverses it within the grace period).
+
+**Retention tier** — one of the three buckets `scenarios/deletion_execution.py`
+(#143) sorts a user's data into once their deletion request's grace period
+elapses: **hard delete** (behavioural data with no retention duty —
+`client_events`, `playtime_sessions`, `wishlist_items` — rows removed
+outright), **anonymize in place** (the `users` row itself — kept, with
+`username`/`email` overwritten by a tombstone value and `country` cleared,
+so every foreign key into it stays intact), and **retain untouched**
+(`purchases`, `refunds`, `ownership_grants` — left exactly as they are
+under statutory commercial/tax retention, which overrides the erasure
+request). Not a cascade: which tier a table falls into is a fixed,
+per-table decision, not something inherited by following a foreign key
+down from `users`. See
+`docs/adr/0004-three-tier-compliance-erasure-143.md`.
