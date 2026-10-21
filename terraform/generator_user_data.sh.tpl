@@ -34,4 +34,10 @@ docker run -d \
   -e DB_PASSWORD="${db_password}" \
   -e TICK_MIN_SECONDS="${tick_min_seconds}" \
   -e TICK_MAX_SECONDS="${tick_max_seconds}" \
+  -e REFUND_REASON_NULL_RATE="${refund_reason_null_rate}" \
+  -e DUPLICATE_RATE_WISHLIST_ITEMS="${duplicate_rate_wishlist_items}" \
+  -e DUPLICATE_RATE_PLAYTIME_SESSIONS="${duplicate_rate_playtime_sessions}" \
+  -e PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS="${purchase_recorded_at_jitter_max_seconds}" \
+  -e REVIEW_RECORDED_AT_JITTER_MAX_SECONDS="${review_recorded_at_jitter_max_seconds}" \
+  -e SNAPSHOT_RECORDED_AT_JITTER_MAX_SECONDS="${snapshot_recorded_at_jitter_max_seconds}" \
   steam-generator

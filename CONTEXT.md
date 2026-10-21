@@ -82,3 +82,15 @@ happens to exist upstream.
 
 See `docs/adr/0001-argocd-reverses-iac-boundary-28.md` for why ArgoCD owns
 this layer instead of Terraform or hand-run `kubectl`.
+
+**Request-then-execute sequence** — the documented shape of compliance
+erasure: a deletion *request* is recorded first (`users.deletion_requested_at`
+set, nothing deleted), then — only after a restoration grace period has
+elapsed with no reversal — the *execute* phase runs an actual hard delete
+(#143). This makes the sequence the pipeline has to handle a soft delete
+(the request, an ordinary `UPDATE`) followed later by a hard delete,
+which is the one documented exception to this repo's otherwise-universal
+soft-delete convention (`db/schema.sql:4`, "Revocation/end pattern:
+nullable `*_at` column, never delete rows") rather than a contradiction
+of it. See `scenarios/deletion_request.py` (marks the request) and
+`scenarios/deletion_reversal.py` (reverses it within the grace period).
