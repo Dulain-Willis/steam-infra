@@ -36,6 +36,12 @@ TICK_MIN_SECONDS = float(os.environ.get("TICK_MIN_SECONDS", "1"))
 TICK_MAX_SECONDS = float(os.environ.get("TICK_MAX_SECONDS", "2"))
 
 PAYMENT_METHODS = ["credit_card", "paypal", "steam_wallet"]
+# A fourth payment method that starts appearing once purchased_at crosses
+# dirty.PAYMENT_METHOD_NEW_ONSET_DATE (#139) -- a dated product-launch
+# switch, not a probability roll, and never emitted before that date.
+# payment_method carries no check constraint (db/schema.sql), unlike
+# campaign-channel/event-name, which is why it's the column this fault uses.
+PAYMENT_METHOD_NEW = "crypto"
 # ponytail: purchases are always USD regardless of the per-region
 # game_prices seeded by #10; wire up region-aware pricing if/when a later
 # ticket needs multi-currency purchases.
@@ -97,7 +103,10 @@ def _insert_purchase(cur, clock, rng, user_id, game_id):
     for the given buyer/game and returns its id."""
     purchased_at = clock()
     amount_cents = rng.randint(999, 5999)
-    payment_method = rng.choice(PAYMENT_METHODS)
+    methods = PAYMENT_METHODS
+    if dirty.should_emit_new_payment_method(purchased_at):
+        methods = PAYMENT_METHODS + [PAYMENT_METHOD_NEW]
+    payment_method = rng.choice(methods)
     recorded_at = dirty.jittered(purchased_at, rng, dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)
 
     cur.execute(
