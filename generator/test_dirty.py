@@ -5,12 +5,15 @@ from datetime import date, datetime, timezone
 import dirty
 from dirty import (
     DUPLICATE_RATES,
+    LATE_ARRIVAL_MAX_DAYS,
+    LATE_ARRIVAL_RATE,
     ORPHAN_LATE_ARRIVAL_RATE,
     ORPHAN_NEVER_ARRIVES_RATE,
     PAYMENT_METHOD_NEW_ONSET_DATE,
     PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS,
     REFUND_REASON_NULL_RATE,
     jittered,
+    late_arrival_offset,
     maybe_null,
     orphan_flavor,
     should_duplicate,
@@ -147,3 +150,45 @@ def test_should_emit_new_payment_method_is_true_on_and_after_the_onset_date(monk
     assert should_emit_new_payment_method(before) is False
     assert should_emit_new_payment_method(on_the_day) is True
     assert should_emit_new_payment_method(after) is True
+
+
+def test_late_arrival_rate_and_max_days_have_sane_code_defaults():
+    # Low hit rate, tail bound well inside #134's 14-day lookback window
+    # (double the tail, per #134's own reasoning).
+    assert LATE_ARRIVAL_RATE == 0.01
+    assert LATE_ARRIVAL_MAX_DAYS == 7
+
+
+def test_late_arrival_offset_returns_none_on_a_miss():
+    assert late_arrival_offset(AlwaysRng(0.999)) is None
+
+
+def test_late_arrival_offset_returns_a_timedelta_on_a_hit():
+    offset = late_arrival_offset(AlwaysRng(0.0))
+    assert offset is not None
+    assert offset.total_seconds() >= 0
+
+
+def test_late_arrival_offset_never_exceeds_the_configured_tail_bound():
+    rng = random.Random(42)
+    offsets = [o for o in (late_arrival_offset(rng) for _ in range(20000)) if o is not None]
+    assert offsets  # the default rate still produces some hits over this many draws
+    max_days = max(o.total_seconds() for o in offsets) / 86400
+    assert max_days <= LATE_ARRIVAL_MAX_DAYS
+
+
+def test_late_arrival_rate_roughly_matches_over_many_rolls():
+    rng = random.Random(42)
+    hits = [late_arrival_offset(rng) is not None for _ in range(20000)]
+    hit_rate = sum(hits) / len(hits)
+    assert 0.005 < hit_rate < 0.015
+
+
+def test_late_arrival_default_rate_leaves_the_overwhelming_majority_same_second():
+    # AC: "at default rates the overwhelming majority of events remain
+    # same-second" -- a miss returns None, meaning the caller inserts at
+    # clock() unmodified (same second as the tick that generated it).
+    rng = random.Random(42)
+    results = [late_arrival_offset(rng) for _ in range(20000)]
+    same_second = sum(1 for r in results if r is None)
+    assert same_second / len(results) > 0.98

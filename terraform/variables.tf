@@ -65,6 +65,18 @@ variable "orphan_late_arrival_delay_seconds" {
   default     = "90"
 }
 
+variable "late_arrival_rate" {
+  description = "LATE_ARRIVAL_RATE override for the generator container"
+  type        = string
+  default     = "0.01"
+}
+
+variable "late_arrival_max_days" {
+  description = "LATE_ARRIVAL_MAX_DAYS override for the generator container"
+  type        = string
+  default     = "7"
+}
+
 variable "payment_method_new_onset_date" {
   description = "PAYMENT_METHOD_NEW_ONSET_DATE override for the generator container"
   type        = string

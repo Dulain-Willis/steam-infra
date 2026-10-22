@@ -72,6 +72,8 @@ resource "aws_instance" "generator" {
     orphan_never_arrives_rate               = var.orphan_never_arrives_rate
     orphan_late_arrival_rate                = var.orphan_late_arrival_rate
     orphan_late_arrival_delay_seconds       = var.orphan_late_arrival_delay_seconds
+    late_arrival_rate                       = var.late_arrival_rate
+    late_arrival_max_days                   = var.late_arrival_max_days
     payment_method_new_onset_date           = var.payment_method_new_onset_date
   }))
 

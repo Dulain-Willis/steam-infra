@@ -43,5 +43,7 @@ docker run -d \
   -e ORPHAN_NEVER_ARRIVES_RATE="${orphan_never_arrives_rate}" \
   -e ORPHAN_LATE_ARRIVAL_RATE="${orphan_late_arrival_rate}" \
   -e ORPHAN_LATE_ARRIVAL_DELAY_SECONDS="${orphan_late_arrival_delay_seconds}" \
+  -e LATE_ARRIVAL_RATE="${late_arrival_rate}" \
+  -e LATE_ARRIVAL_MAX_DAYS="${late_arrival_max_days}" \
   -e PAYMENT_METHOD_NEW_ONSET_DATE="${payment_method_new_onset_date}" \
   steam-generator

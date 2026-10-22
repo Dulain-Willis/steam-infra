@@ -313,7 +313,7 @@ def concurrent_player_snapshot_tick(cur, clock, rng):
     return game_ids
 
 
-def _open_close_tick(cur, clock, rng, table, start_col, end_col):
+def _open_close_tick(cur, clock, rng, table, start_col, end_col, late_arrival=False):
     """Shared open/close pattern for playtime_sessions, family_shares, and
     wishlist_items: with an open row available, roughly half the time close
     it; otherwise (or if none is open) start a new one. Returns the row id.
@@ -323,6 +323,12 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col):
     copy of the just-started row (distinct id, same user/game/start time) —
     a start-event heartbeat/add duplicated upstream. Never rolled on the
     close branch.
+
+    late_arrival=True (#136, only playtime_session_tick passes it) also
+    rolls dirty.late_arrival_offset on the start branch: a hit backdates
+    start_col by the returned offset while leaving the insert's implicit
+    recorded_at default (now()) untouched -- an offline client uploading a
+    session days after it actually started.
     """
     cur.execute(
         f"select id from {table} where {end_col} is null order by random() limit 1"
@@ -340,11 +346,16 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col):
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
+    start_time = clock()
+    if late_arrival:
+        offset = dirty.late_arrival_offset(rng)
+        if offset is not None:
+            start_time -= offset
     insert_sql = (
         f"insert into {table} (user_id, game_id, {start_col}) "
         "values (%s, %s, %s) returning id"
     )
-    params = (user_id, game_id, clock())
+    params = (user_id, game_id, start_time)
     cur.execute(insert_sql, params)
     row_id = cur.fetchone()[0]
 
@@ -360,7 +371,9 @@ def playtime_session_tick(cur, clock, rng):
     set, ended_at null) or, with an open session available, closes it
     (ended_at set). Returns the session id.
     """
-    return _open_close_tick(cur, clock, rng, "playtime_sessions", "started_at", "ended_at")
+    return _open_close_tick(
+        cur, clock, rng, "playtime_sessions", "started_at", "ended_at", late_arrival=True
+    )
 
 
 def wishlist_item_tick(cur, clock, rng):
@@ -478,6 +491,14 @@ def client_events_tick(cur, clock, rng):
     dirty.orphan_flavor() can swap the seeded user_id out for a synthetic one
     that either never appears in users ("never"), or appears
     ORPHAN_LATE_ARRIVAL_DELAY_SECONDS later via _pending_late_users ("late").
+
+    A separate roll against dirty.late_arrival_offset() (#136) can backdate
+    the whole session's occurred_at values -- the session's own relative
+    timing (elapsed between funnel steps) is preserved, just shifted into
+    the past, while each row's implicit recorded_at default (now()) stays
+    at the real insert time. Distinct from the orphan "late" flavor above:
+    that delays when the *parent user* appears; this delays when the event
+    itself is reported, independent of orphaning.
     """
     cur.execute("select id from users order by random() limit 1")
     user_id = cur.fetchone()[0]
@@ -505,6 +526,9 @@ def client_events_tick(cur, clock, rng):
     session_id = str(uuid.UUID(int=rng.getrandbits(128)))
 
     base = clock()
+    late_offset = dirty.late_arrival_offset(rng)
+    if late_offset is not None:
+        base -= late_offset
     elapsed = 0
     for i, event_name in enumerate(funnel_session(rng)):
         if i > 0:

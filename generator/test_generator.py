@@ -737,3 +737,110 @@ def test_tick_flushes_due_late_users_before_dispatching():
 
     assert any("insert into users" in sql for sql, _ in cur.calls)
     assert generator._pending_late_users == []
+
+
+# -- #136: late-arriving events ---------------------------------------------
+
+
+def test_playtime_session_tick_backdates_started_at_on_a_forced_late_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_MAX_DAYS", 7)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+    # should_duplicate's roll follows the late-arrival roll; pin its rate to
+    # 0 so this test stays about late arrival, not duplication.
+    monkeypatch.setitem(dirty.DUPLICATE_RATES, "playtime_sessions", 0.0)
+
+    playtime_session_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into playtime_sessions" in c[0])
+    started_at = params[2]
+    # backdated: strictly before clock(), but never beyond the tail bound
+    assert started_at < fixed_clock()
+    assert fixed_clock() - started_at <= timedelta(days=7)
+    # recorded_at is never named in the insert -- it's left at its database
+    # default (now()), the real insert time, untouched by the backdating.
+    assert "recorded_at" not in sql
+
+
+def test_playtime_session_tick_never_backdates_on_a_miss(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into playtime_sessions" in c[0])
+    assert params[2] == fixed_clock()
+
+
+def test_playtime_session_tick_never_backdates_the_close_branch(monkeypatch):
+    # Even forced to always hit, late arrival must never touch the close
+    # (update) branch -- it only ever backdates a session's start.
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[("session-1",)])
+    rng = random.Random()
+    rng.random = lambda: 0.0  # force the "close it" branch
+
+    playtime_session_tick(cur, fixed_clock, rng)
+
+    sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
+    assert params == (fixed_clock(), "session-1")
+
+
+def test_wishlist_item_tick_never_backdates_even_on_a_forced_late_roll(monkeypatch):
+    # late arrival is wired only through playtime_session_tick's
+    # late_arrival=True -- wishlist_items has no physically plausible
+    # offline client and must stay on clock() unconditionally.
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("item-1",)])
+
+    wishlist_item_tick(cur, fixed_clock, random.Random(0))
+
+    sql, params = next(c for c in cur.calls if "insert into wishlist_items" in c[0])
+    assert params == ("user-1", "game-1", fixed_clock())
+
+
+def test_client_events_tick_backdates_occurred_at_on_a_forced_late_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_MAX_DAYS", 7)
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, random.Random(7))
+
+    inserts = [(sql, p) for sql, p in cur.calls if "insert into client_events" in sql]
+    assert inserts   # the funnel always emits at least store_page_view
+    for sql, params in inserts:
+        occurred_at = params[0]
+        assert occurred_at < fixed_clock()
+        assert fixed_clock() - occurred_at <= timedelta(days=7)
+        assert "recorded_at" not in sql   # arrival timestamp stays at its db default
+
+
+def test_client_events_tick_never_backdates_on_a_miss(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, random.Random(7))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    assert inserts[0][0] == fixed_clock()
+
+
+def test_late_arrival_does_not_touch_the_existing_jitter_mechanism(monkeypatch):
+    # AC: "the existing jitter mechanism is untouched." purchase/review/
+    # snapshot still go through dirty.jittered() alone, never
+    # dirty.late_arrival_offset() -- forcing late arrival to always hit must
+    # not change a purchase_tick insert at all.
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("purchase-1",)])
+
+    purchase_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into purchases" in c[0])
+    purchased_at, recorded_at = params[5], params[6]
+    assert purchased_at == fixed_clock()
+    assert recorded_at >= purchased_at
+    assert recorded_at - purchased_at <= timedelta(seconds=dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)

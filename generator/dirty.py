@@ -74,6 +74,33 @@ ORPHAN_LATE_ARRIVAL_RATE = _env_float("ORPHAN_LATE_ARRIVAL_RATE", "0.03")
 ORPHAN_LATE_ARRIVAL_DELAY_SECONDS = _env_float("ORPHAN_LATE_ARRIVAL_DELAY_SECONDS", "90")
 
 
+# Late-arriving rows (#136): a distinct mechanism from jittered() above, not
+# a widening of it. jittered() nudges recorded_at forward from an
+# already-correct event time -- ordinary write latency, feeding the source
+# freshness fact. This instead backdates the event-time column itself and
+# leaves recorded_at at its database default (the real insert time) -- what
+# an offline client upload looks like, with no simulated clock needed.
+# Applies only to client_events.occurred_at and playtime_sessions.started_at
+# -- the two columns with a physically plausible offline client. Default
+# rate is low and the tail bound (#134's lookback window is double this) is
+# 7 days, so the ordinary case stays same-second and the freshness signal
+# stays undisturbed.
+LATE_ARRIVAL_RATE = _env_float("LATE_ARRIVAL_RATE", "0.01")
+LATE_ARRIVAL_MAX_DAYS = _env_float("LATE_ARRIVAL_MAX_DAYS", "7")
+
+
+def late_arrival_offset(rng):
+    """Rolls at LATE_ARRIVAL_RATE for a late-arriving row. On a hit, returns
+    a timedelta backdating the event-time column by a uniform 0..
+    LATE_ARRIVAL_MAX_DAYS interval -- never more than the configured tail
+    bound. On a miss (the overwhelming majority at the default rate),
+    returns None, meaning "insert at clock() as normal."
+    """
+    if rng.random() < LATE_ARRIVAL_RATE:
+        return timedelta(days=rng.uniform(0, LATE_ARRIVAL_MAX_DAYS))
+    return None
+
+
 def orphan_flavor(rng):
     """Rolls once against a shared budget for client_events' two orphan
     parent flavours: ORPHAN_NEVER_ARRIVES_RATE (checked first) for a parent
