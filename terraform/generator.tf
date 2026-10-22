@@ -60,6 +60,22 @@ resource "aws_instance" "generator" {
     # docs/generator-runbook.md for the measured run.
     tick_min_seconds = "1"
     tick_max_seconds = "2"
+
+    # Dirty-data injection overrides (#130) -- one tf variable per env var
+    # generator/dirty.py reads, see variables.tf for the convention.
+    refund_reason_null_rate                 = var.refund_reason_null_rate
+    duplicate_rate_wishlist_items           = var.duplicate_rate_wishlist_items
+    duplicate_rate_playtime_sessions        = var.duplicate_rate_playtime_sessions
+    purchase_recorded_at_jitter_max_seconds = var.purchase_recorded_at_jitter_max_seconds
+    review_recorded_at_jitter_max_seconds   = var.review_recorded_at_jitter_max_seconds
+    snapshot_recorded_at_jitter_max_seconds = var.snapshot_recorded_at_jitter_max_seconds
+    orphan_never_arrives_rate               = var.orphan_never_arrives_rate
+    orphan_late_arrival_rate                = var.orphan_late_arrival_rate
+    orphan_late_arrival_delay_seconds       = var.orphan_late_arrival_delay_seconds
+    late_arrival_rate                       = var.late_arrival_rate
+    late_arrival_max_days                   = var.late_arrival_max_days
+    payment_method_new_onset_date           = var.payment_method_new_onset_date
+    restatement_weight                      = var.restatement_weight
   }))
 
   tags = {

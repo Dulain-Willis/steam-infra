@@ -15,7 +15,11 @@ schema: a "start"/"send" half inserts a row with the close column null,
 and a "close"/"redeem" half — picked probabilistically when an open row
 exists — closes it (and, for gift, only then writes the fan-in
 `ownership_grants` row, since ownership doesn't change hands until
-redemption).
+redemption). `restatement` (#138) corrects a historical `ownership_grants`
+row instead of writing a new event: it reverses a prior revocation,
+bumping `recorded_at` (arrival) while leaving `granted_at` (event time)
+untouched, so the correction is a restatement of an old period rather
+than a new event wearing a disguise.
 """
 
 import json
@@ -36,6 +40,12 @@ TICK_MIN_SECONDS = float(os.environ.get("TICK_MIN_SECONDS", "1"))
 TICK_MAX_SECONDS = float(os.environ.get("TICK_MAX_SECONDS", "2"))
 
 PAYMENT_METHODS = ["credit_card", "paypal", "steam_wallet"]
+# A fourth payment method that starts appearing once purchased_at crosses
+# dirty.PAYMENT_METHOD_NEW_ONSET_DATE (#139) -- a dated product-launch
+# switch, not a probability roll, and never emitted before that date.
+# payment_method carries no check constraint (db/schema.sql), unlike
+# campaign-channel/event-name, which is why it's the column this fault uses.
+PAYMENT_METHOD_NEW = "crypto"
 # ponytail: purchases are always USD regardless of the per-region
 # game_prices seeded by #10; wire up region-aware pricing if/when a later
 # ticket needs multi-currency purchases.
@@ -48,8 +58,9 @@ CHARGEBACK_CHANCE = 0.1
 # Weighted event types: (name, weight). Catalog events (price_change,
 # concurrent_player_snapshot) are rarer than per-user purchases; playtime
 # sessions fire far more often than the ownership events since a real
-# player racks up many sessions per purchase; refund is the rarest event
-# of all.
+# player racks up many sessions per purchase; refund is the rarest of the
+# ownership events (purchase/gift/key_redemption/refund) -- restatement
+# (#138), a correction rather than an ownership event, is rarer still.
 EVENT_WEIGHTS = [
     ("purchase", 5.0),
     ("gift", 2.0),
@@ -65,6 +76,7 @@ EVENT_WEIGHTS = [
     # effective client_events row rate is a few x this weight. Moderate for
     # now; #16 owns recalibrating combined throughput.
     ("client_events", 3.0),
+    ("restatement", dirty.RESTATEMENT_WEIGHT),
 ]
 
 # The 5 funnel steps, in order (steam-analytics#12). Kept in sync with the
@@ -97,7 +109,10 @@ def _insert_purchase(cur, clock, rng, user_id, game_id):
     for the given buyer/game and returns its id."""
     purchased_at = clock()
     amount_cents = rng.randint(999, 5999)
-    payment_method = rng.choice(PAYMENT_METHODS)
+    methods = PAYMENT_METHODS
+    if dirty.should_emit_new_payment_method(purchased_at):
+        methods = PAYMENT_METHODS + [PAYMENT_METHOD_NEW]
+    payment_method = rng.choice(methods)
     recorded_at = dirty.jittered(purchased_at, rng, dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)
 
     cur.execute(
@@ -243,6 +258,31 @@ def refund_tick(cur, clock, rng):
     return refund_id
 
 
+def restatement_tick(cur, clock, rng):
+    """Backdated restatement (#138): reverses a historical refund by
+    clearing revoked_at on a random already-revoked ownership_grants row --
+    a late-processed refund correction (a support team reinstating
+    ownership after further review) landing long after the original
+    event. granted_at (the event-time column) is left untouched; only
+    revoked_at and recorded_at (arrival) change, so CDC lands this as a
+    restatement of an old period rather than a new event. No-ops if
+    nothing is currently revoked.
+    """
+    cur.execute(
+        "select id from ownership_grants where revoked_at is not null order by random() limit 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    grant_id = row[0]
+
+    cur.execute(
+        "update ownership_grants set revoked_at = null, recorded_at = %s where id = %s",
+        (clock(), grant_id),
+    )
+    return grant_id
+
+
 def price_change_tick(cur, clock, rng):
     """Nudges a random seeded game_prices row and writes the price_changes
     audit row capturing old/new price_cents.
@@ -304,41 +344,73 @@ def concurrent_player_snapshot_tick(cur, clock, rng):
     return game_ids
 
 
-def _open_close_tick(cur, clock, rng, table, start_col, end_col, duplicate_rate=0.0):
+def _open_close_tick(cur, clock, rng, table, start_col, end_col, late_arrival=False):
     """Shared open/close pattern for playtime_sessions, family_shares, and
     wishlist_items: with an open row available, roughly half the time close
     it; otherwise (or if none is open) start a new one. Returns the row id.
 
-    On the start branch, rolls dirty.should_duplicate at duplicate_rate: a
-    hit inserts a second, literal copy of the just-started row (distinct id,
-    same user/game/start time) — a start-event heartbeat/add duplicated
-    upstream. Never rolled on the close branch.
+    The start branch excludes users with deletion_executed_at set
+    (steam-infra#129 integration review, finding 5): an anonymized user row
+    is still a live FK target, so without this the generator would keep
+    writing fresh playtime_sessions/wishlist_items rows for a user whose
+    behavioural data erasure drill just hard-deleted everything before it.
+
+    On the start branch, rolls dirty.should_duplicate against table's
+    configured rate (dirty.DUPLICATE_RATES): a hit inserts a second, literal
+    copy of the just-started row (distinct id, same user/game/start time) —
+    a start-event heartbeat/add duplicated upstream. Never rolled on the
+    close branch.
+
+    late_arrival=True (#136, only playtime_session_tick passes it) also
+    rolls dirty.late_arrival_offset on the start branch: a hit backdates
+    start_col by the returned offset while leaving the insert's implicit
+    recorded_at default (now()) untouched -- an offline client uploading a
+    session days after it actually started.
+
+    On the close branch, late_arrival=True derives end_col from the row's
+    own start_col (dirty.playtime_session_duration) instead of stamping
+    clock() -- clock() against a start_col that may have been backdated
+    by up to dirty.LATE_ARRIVAL_MAX_DAYS would manufacture a multi-day
+    session instead of just delaying when it arrived. Stateless and
+    correct across a generator restart or a close picked up by a
+    different process, unlike stashing the offset in memory would be.
     """
     cur.execute(
-        f"select id from {table} where {end_col} is null order by random() limit 1"
+        f"select id, {start_col} from {table} where {end_col} is null order by random() limit 1"
     )
     open_row = cur.fetchone()
     if open_row and rng.random() < 0.5:
-        row_id = open_row[0]
+        row_id, started_at = open_row
+        end_time = (
+            started_at + dirty.playtime_session_duration(rng) if late_arrival else clock()
+        )
         cur.execute(
             f"update {table} set {end_col} = %s where id = %s",
-            (clock(), row_id),
+            (end_time, row_id),
         )
         return row_id
 
-    cur.execute("select id from users order by random() limit 1")
+    cur.execute(
+        "select id from users where deletion_executed_at is null "
+        "order by random() limit 1"
+    )
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
+    start_time = clock()
+    if late_arrival:
+        offset = dirty.late_arrival_offset(rng)
+        if offset is not None:
+            start_time -= offset
     insert_sql = (
         f"insert into {table} (user_id, game_id, {start_col}) "
         "values (%s, %s, %s) returning id"
     )
-    params = (user_id, game_id, clock())
+    params = (user_id, game_id, start_time)
     cur.execute(insert_sql, params)
     row_id = cur.fetchone()[0]
 
-    if dirty.should_duplicate(rng, duplicate_rate, table):
+    if dirty.should_duplicate(rng, table):
         cur.execute(insert_sql, params)
         cur.fetchone()
 
@@ -351,8 +423,7 @@ def playtime_session_tick(cur, clock, rng):
     (ended_at set). Returns the session id.
     """
     return _open_close_tick(
-        cur, clock, rng, "playtime_sessions", "started_at", "ended_at",
-        duplicate_rate=dirty.PLAYTIME_START_DUPLICATE_RATE,
+        cur, clock, rng, "playtime_sessions", "started_at", "ended_at", late_arrival=True
     )
 
 
@@ -361,10 +432,7 @@ def wishlist_item_tick(cur, clock, rng):
     removed_at null) or, with an open item available, removes it
     (removed_at set). Returns the item id.
     """
-    return _open_close_tick(
-        cur, clock, rng, "wishlist_items", "added_at", "removed_at",
-        duplicate_rate=dirty.WISHLIST_ADD_DUPLICATE_RATE,
-    )
+    return _open_close_tick(cur, clock, rng, "wishlist_items", "added_at", "removed_at")
 
 
 def family_share_tick(cur, clock, rng):
@@ -439,6 +507,29 @@ def funnel_session(rng, advance_p=FUNNEL_ADVANCE_P):
     return steps
 
 
+# Process-local queue of late-arriving orphan parents (#140): (user_id,
+# due_at) pairs, drained by _emit_due_late_users once clock() reaches
+# due_at. ponytail: not persisted -- a generator restart mid-delay just
+# means that one late parent never shows up. Fine for a dev-data generator
+# exercising a warehouse join, not a durability system.
+_pending_late_users = []
+
+
+def _emit_due_late_users(cur, now):
+    """Inserts a bare users row for every pending late-arriving orphan
+    parent (#140) whose delay has elapsed by now, and drops it from the
+    queue. Called every tick so a scheduled late parent shows up without a
+    dedicated scheduler."""
+    global _pending_late_users
+    due = [u for u in _pending_late_users if u[1] <= now]
+    _pending_late_users = [u for u in _pending_late_users if u[1] > now]
+    for user_id, _ in due:
+        cur.execute(
+            "insert into users (id, username, email) values (%s, %s, %s)",
+            (user_id, f"orphan-{user_id}", f"{user_id}@steam-orphan.invalid"),
+        )
+
+
 def client_events_tick(cur, clock, rng):
     """Emits one browsing session as an ordered run of client_events rows:
     a random user browsing a random game, walking the funnel until they drop
@@ -446,13 +537,41 @@ def client_events_tick(cur, clock, rng):
     later step carries the game. props carries the session's referrer and,
     for ~CLIENT_EVENT_CAMPAIGN_CHANCE of sessions, a campaign_id drawn from
     marketing_campaigns. Returns the session id.
+
+    client_events.user_id has no FK to users (#140), so a roll against
+    dirty.orphan_flavor() can swap the seeded user_id out for a synthetic one
+    that either never appears in users ("never"), or appears
+    ORPHAN_LATE_ARRIVAL_DELAY_SECONDS later via _pending_late_users ("late").
+
+    A separate roll against dirty.late_arrival_offset() (#136) can backdate
+    the whole session's occurred_at values -- the session's own relative
+    timing (elapsed between funnel steps) is preserved, just shifted into
+    the past, while each row's implicit recorded_at default (now()) stays
+    at the real insert time. Distinct from the orphan "late" flavor above:
+    that delays when the *parent user* appears; this delays when the event
+    itself is reported, independent of orphaning.
+
+    Excludes users with deletion_executed_at set (steam-infra#129
+    integration review, finding 5), the same guard _open_close_tick's start
+    branch applies -- otherwise an erased user keeps generating fresh
+    client_events rows the moment the drill anonymizes their row.
     """
-    cur.execute("select id from users order by random() limit 1")
+    cur.execute(
+        "select id from users where deletion_executed_at is null "
+        "order by random() limit 1"
+    )
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
     cur.execute("select id from marketing_campaigns order by random() limit 1")
     campaign_row = cur.fetchone()
+
+    orphan = dirty.orphan_flavor(rng)
+    if orphan is not None:
+        user_id = str(uuid.UUID(int=rng.getrandbits(128)))
+        if orphan == "late":
+            due_at = clock() + timedelta(seconds=dirty.ORPHAN_LATE_ARRIVAL_DELAY_SECONDS)
+            _pending_late_users.append((user_id, due_at))
 
     campaign_id = (
         str(campaign_row[0])
@@ -466,6 +585,9 @@ def client_events_tick(cur, clock, rng):
     session_id = str(uuid.UUID(int=rng.getrandbits(128)))
 
     base = clock()
+    late_offset = dirty.late_arrival_offset(rng)
+    if late_offset is not None:
+        base -= late_offset
     elapsed = 0
     for i, event_name in enumerate(funnel_session(rng)):
         if i > 0:
@@ -492,11 +614,15 @@ EVENT_HANDLERS = {
     "wishlist_item": wishlist_item_tick,
     "review": review_tick,
     "client_events": client_events_tick,
+    "restatement": restatement_tick,
 }
 
 
 def tick(cur, clock, rng):
-    """Picks an event type by weight and executes it. Returns the type name."""
+    """Picks an event type by weight and executes it. Returns the type name.
+    Also flushes any late-arriving orphan parent (#140) whose delay has
+    elapsed, independent of which event type this tick picks."""
+    _emit_due_late_users(cur, clock())
     event_type = pick_event_type(rng)
     EVENT_HANDLERS[event_type](cur, clock, rng)
     return event_type

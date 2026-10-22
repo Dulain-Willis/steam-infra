@@ -4,11 +4,14 @@
 # terraform/strimzi.tf). Requires the operator to already be running in the
 # `kafka` namespace.
 #
-# Storage is ephemeral: every session does a full Debezium snapshot
-# (snapshot.mode: always, see docs/debezium-postgres-config.md) and the
-# cluster is torn down between sessions, so there's nothing worth persisting
-# across pod restarts — matches the project's teardown-between-sessions
-# cost discipline.
+# Storage is ephemeral: the cluster (and its connect-cluster-offsets topic)
+# is torn down between sessions, so the first connector start of every
+# session still always takes a full Debezium snapshot regardless of
+# snapshot.mode (snapshot.mode: initial — see docs/debezium-postgres-config.md
+# — only changes behavior for an in-session connector restart, not this
+# session-boundary case). There's nothing worth persisting across pod
+# restarts either way — matches the project's teardown-between-sessions cost
+# discipline.
 apiVersion: kafka.strimzi.io/v1
 kind: KafkaNodePool
 metadata:
