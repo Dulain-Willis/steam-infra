@@ -16,13 +16,19 @@ deletion request (`scenarios/deletion_request.py`) has not been reversed
 2. **Anonymize in place** -- the `users` row is kept, `username`/`email`
    overwritten with a tombstone value derived from the user's id
    (`deleted-user-<id>` / `deleted-<id>@erased.invalid`), `country`
-   cleared.
+   cleared, `deletion_executed_at` set to the now() read at the top of
+   the call. Added (steam-infra#129 integration review, finding 9) as
+   the durable "execution happened" signal: a re-run against the same
+   user now raises rather than re-tombstoning, and a warehouse consumer
+   can key off a real column instead of pattern-matching the username
+   tombstone.
 3. **Retain untouched** -- `purchases`, `refunds`, `ownership_grants`
    (and every other table with a `user_id` FK -- `gifts`,
    `key_redemptions`, `reviews`, `family_shares`) are never written here.
 
-Raises -- refusing to act -- if there's no pending request, or if the
-grace period hasn't elapsed yet. The grace-period comparison reuses
+Raises -- refusing to act -- if there's no pending request, if
+`deletion_executed_at` is already set (erasure already ran for this
+user), or if the grace period hasn't elapsed yet. The grace-period comparison reuses
 `deletion_reversal.py`'s elapsed-time logic (same env var, same
 now()-vs-`deletion_requested_at` comparison), so the override-to-seconds
 trick that proves `deletion_reversal` also proves this scenario without

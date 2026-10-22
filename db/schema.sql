@@ -28,6 +28,7 @@ create table users (
     country text,                       -- ISO 3166-1 alpha-2, nullable; buyer's country, for revenue-by-region downstream (steam-analytics#11)
     campaign_id uuid,                    -- first-touch attribution: nullable FK to marketing_campaigns, set once at signup, never re-attributed. NULL = organic/direct. FK added below (users precedes marketing_campaigns). (steam-analytics#14)
     deletion_requested_at timestamptz,   -- compliance erasure request; nullable, unset by default. Set by scenarios/deletion_request.py, cleared by scenarios/deletion_reversal.py if reversed within the grace period. NULL = no pending request; nothing is deleted at this stage (#142; #143 does the eventual hard delete).
+    deletion_executed_at timestamptz,    -- durable erasure-executed marker; nullable, unset by default, set once by scenarios/deletion_execution.py and never cleared. The real signal that tier-1/tier-2 erasure already ran -- distinct from the username-prefix tombstone, which is just a side effect of it and not safe for a warehouse consumer or a re-run guard to key off of (steam-infra#129 integration review, finding 9).
     created_at timestamptz not null default now()
 );
 

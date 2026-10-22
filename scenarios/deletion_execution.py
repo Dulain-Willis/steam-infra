@@ -66,16 +66,28 @@ def execute_deletion(cur, username, grace_period_seconds=GRACE_PERIOD_SECONDS):
     quietly no-opping, the same way deletion_reversal.py refuses past the
     window instead of silently succeeding."""
     cur.execute(
-        "select id, deletion_requested_at, now() from users where username = %s;",
+        "select id, deletion_requested_at, deletion_executed_at, now() "
+        "from users where username = %s;",
         (username,),
     )
     row = cur.fetchone()
     if row is None:
         raise ValueError(f"no such user: {username}")
 
-    user_id, requested_at, now = row
+    user_id, requested_at, executed_at, now = row
     if requested_at is None:
         raise ValueError(f"{username} has no pending deletion request")
+
+    # deletion_executed_at (steam-infra#129 integration review, finding 9)
+    # is the durable signal that execution already ran -- without it, the
+    # only marker left behind is the username prefix execution itself
+    # writes below, which a second run can't distinguish from "never
+    # erased" (deletion_requested_at is never cleared here, unlike
+    # deletion_reversal.py's within-window undo). Refuses a repeat run the
+    # same way the grace-period/no-pending-request checks above refuse,
+    # rather than silently re-tombstoning an already-anonymized row.
+    if executed_at is not None:
+        raise ValueError(f"{username} was already erased at {executed_at}")
 
     elapsed = (now - requested_at).total_seconds()
     if elapsed < grace_period_seconds:
@@ -106,11 +118,12 @@ def execute_deletion(cur, username, grace_period_seconds=GRACE_PERIOD_SECONDS):
             update users
             set username = %s,
                 email = %s,
-                country = null
+                country = null,
+                deletion_executed_at = %s
             where id = %s
             returning id;
             """,
-            (tombstone_username, tombstone_email, user_id),
+            (tombstone_username, tombstone_email, now, user_id),
         )
         cur.fetchone()
     except Exception:

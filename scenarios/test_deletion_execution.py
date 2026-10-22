@@ -13,7 +13,7 @@ USER_ID = "11111111-1111-1111-1111-111111111111"
 def test_execute_deletion_raises_before_the_grace_period_has_elapsed():
     now = datetime(2026, 10, 21, tzinfo=timezone.utc)
     requested_at = now - timedelta(days=1)
-    cur = FakeCursor(fetchone_values=[(USER_ID, requested_at, now)])
+    cur = FakeCursor(fetchone_values=[(USER_ID, requested_at, None, now)])
 
     with pytest.raises(ValueError, match="grace period"):
         execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)
@@ -22,11 +22,29 @@ def test_execute_deletion_raises_before_the_grace_period_has_elapsed():
     assert len(cur.calls) == 1
 
 
+def test_execute_deletion_raises_if_already_executed():
+    # steam-infra#129 integration review, finding 9: deletion_executed_at
+    # is the durable marker that execution already ran -- a second call
+    # for the same user must refuse rather than re-tombstoning an
+    # already-anonymized row (deletion_requested_at is never cleared here,
+    # so that column alone can't distinguish "never erased" from "already
+    # erased").
+    now = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    requested_at = now - timedelta(days=31)
+    executed_at = now - timedelta(days=1)
+    cur = FakeCursor(fetchone_values=[(USER_ID, requested_at, executed_at, now)])
+
+    with pytest.raises(ValueError, match="already erased"):
+        execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)
+
+    assert len(cur.calls) == 1
+
+
 def test_execute_deletion_hard_deletes_behavioural_rows_and_anonymizes_the_user():
     now = datetime(2026, 10, 21, tzinfo=timezone.utc)
     requested_at = now - timedelta(days=31)
     cur = FakeCursor(
-        fetchone_values=[(USER_ID, requested_at, now), (USER_ID,)],
+        fetchone_values=[(USER_ID, requested_at, None, now), (USER_ID,)],
         # One fetchall() per HARD_DELETE_TABLES entry, in order.
         fetchall_values=[[(1,), (2,)], [(1,)], []],
     )
@@ -54,9 +72,11 @@ def test_execute_deletion_hard_deletes_behavioural_rows_and_anonymizes_the_user(
     assert len(update_calls) == 1
     update_sql, update_params = update_calls[0]
     assert "where id = %s" in update_sql
-    tombstone_username, tombstone_email, updated_user_id = update_params
+    assert "deletion_executed_at" in update_sql
+    tombstone_username, tombstone_email, executed_at, updated_user_id = update_params
     assert USER_ID in tombstone_username
     assert USER_ID in tombstone_email
+    assert executed_at == now
     assert updated_user_id == USER_ID
 
     # The hard deletes and the anonymize both happen inside one explicit
@@ -69,7 +89,7 @@ def test_execute_deletion_hard_deletes_behavioural_rows_and_anonymizes_the_user(
 
 def test_execute_deletion_raises_if_no_pending_request():
     now = datetime(2026, 10, 21, tzinfo=timezone.utc)
-    cur = FakeCursor(fetchone_values=[(USER_ID, None, now)])
+    cur = FakeCursor(fetchone_values=[(USER_ID, None, None, now)])
 
     with pytest.raises(ValueError, match="no pending deletion request"):
         execute_deletion(cur, "alice", grace_period_seconds=30 * 86400)

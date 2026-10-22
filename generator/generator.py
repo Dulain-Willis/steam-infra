@@ -349,6 +349,12 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col, late_arrival=Fa
     wishlist_items: with an open row available, roughly half the time close
     it; otherwise (or if none is open) start a new one. Returns the row id.
 
+    The start branch excludes users with deletion_executed_at set
+    (steam-infra#129 integration review, finding 5): an anonymized user row
+    is still a live FK target, so without this the generator would keep
+    writing fresh playtime_sessions/wishlist_items rows for a user whose
+    behavioural data erasure drill just hard-deleted everything before it.
+
     On the start branch, rolls dirty.should_duplicate against table's
     configured rate (dirty.DUPLICATE_RATES): a hit inserts a second, literal
     copy of the just-started row (distinct id, same user/game/start time) —
@@ -384,7 +390,10 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col, late_arrival=Fa
         )
         return row_id
 
-    cur.execute("select id from users order by random() limit 1")
+    cur.execute(
+        "select id from users where deletion_executed_at is null "
+        "order by random() limit 1"
+    )
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]
@@ -541,8 +550,16 @@ def client_events_tick(cur, clock, rng):
     at the real insert time. Distinct from the orphan "late" flavor above:
     that delays when the *parent user* appears; this delays when the event
     itself is reported, independent of orphaning.
+
+    Excludes users with deletion_executed_at set (steam-infra#129
+    integration review, finding 5), the same guard _open_close_tick's start
+    branch applies -- otherwise an erased user keeps generating fresh
+    client_events rows the moment the drill anonymizes their row.
     """
-    cur.execute("select id from users order by random() limit 1")
+    cur.execute(
+        "select id from users where deletion_executed_at is null "
+        "order by random() limit 1"
+    )
     user_id = cur.fetchone()[0]
     cur.execute("select id from games order by random() limit 1")
     game_id = cur.fetchone()[0]

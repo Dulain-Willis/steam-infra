@@ -426,6 +426,19 @@ def test_tick_dispatches_to_the_selected_event_type():
     assert any("insert into purchases" in c[0] for c in cur.calls)
 
 
+def test_playtime_session_tick_excludes_erased_users_from_the_start_branch():
+    # steam-infra#129 integration review, finding 5: an anonymized user
+    # row is still a live FK target, so the start branch's user pick must
+    # exclude deletion_executed_at is not null rows or the generator keeps
+    # writing fresh behavioural rows for an erased user.
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, random.Random(0))
+
+    user_select = next(c for c in cur.calls if "from users" in c[0])
+    assert "deletion_executed_at is null" in user_select[0]
+
+
 def test_playtime_session_tick_starts_a_session_when_none_is_open():
     cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
 
@@ -690,6 +703,20 @@ def test_funnel_session_produces_monotonic_drop_off():
     assert counts == sorted(counts, reverse=True)
     assert counts[-1] > 0                      # some sessions complete the funnel
     assert counts[-1] < counts[0] // 2         # but far fewer than start it
+
+
+def test_client_events_tick_excludes_erased_users_from_the_user_pick(monkeypatch):
+    # steam-infra#129 integration review, finding 5: same guard as
+    # playtime_session_tick's start branch -- an erased user's row is
+    # anonymized, not gone, so the pick must filter it out explicitly.
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    user_select = next(c for c in cur.calls if "from users" in c[0])
+    assert "deletion_executed_at is null" in user_select[0]
 
 
 def test_client_events_tick_writes_one_ordered_row_per_funnel_step(monkeypatch):
