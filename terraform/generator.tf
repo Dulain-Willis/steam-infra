@@ -73,6 +73,7 @@ resource "aws_instance" "generator" {
     orphan_late_arrival_rate                = var.orphan_late_arrival_rate
     orphan_late_arrival_delay_seconds       = var.orphan_late_arrival_delay_seconds
     payment_method_new_onset_date           = var.payment_method_new_onset_date
+    restatement_weight                      = var.restatement_weight
   }))
 
   tags = {

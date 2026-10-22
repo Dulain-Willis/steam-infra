@@ -44,4 +44,5 @@ docker run -d \
   -e ORPHAN_LATE_ARRIVAL_RATE="${orphan_late_arrival_rate}" \
   -e ORPHAN_LATE_ARRIVAL_DELAY_SECONDS="${orphan_late_arrival_delay_seconds}" \
   -e PAYMENT_METHOD_NEW_ONSET_DATE="${payment_method_new_onset_date}" \
+  -e RESTATEMENT_WEIGHT="${restatement_weight}" \
   steam-generator

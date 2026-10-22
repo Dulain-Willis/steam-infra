@@ -111,3 +111,14 @@ def should_emit_new_payment_method(purchased_at):
     PAYMENT_METHOD_NEW_ONSET_DATE. A dated switch, not a roll -- no rng
     involved, so the same purchased_at always gets the same answer."""
     return purchased_at.date() >= PAYMENT_METHOD_NEW_ONSET_DATE
+
+
+# Backdated restatement of a historical row (#138): a correction landing
+# long after the original event, with the event-time column left untouched
+# so the row reads as a restatement of an old period rather than a new
+# event -- what a reversed/late-processed refund looks like in a source
+# system. Wired in as an EVENT_WEIGHTS entry (generator.py) rather than a
+# rng.random() roll inside an existing tick, so operators can crank it for
+# a live demo the same way every other event's relative frequency is
+# tuned, without touching any other tick's existing rng draw sequence.
+RESTATEMENT_WEIGHT = _env_float("RESTATEMENT_WEIGHT", "0.2")

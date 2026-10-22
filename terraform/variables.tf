@@ -70,3 +70,9 @@ variable "payment_method_new_onset_date" {
   type        = string
   default     = "2099-01-01"
 }
+
+variable "restatement_weight" {
+  description = "RESTATEMENT_WEIGHT override for the generator container"
+  type        = string
+  default     = "0.2"
+}

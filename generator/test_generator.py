@@ -29,6 +29,7 @@ from generator import (
     price_change_tick,
     purchase_tick,
     refund_tick,
+    restatement_tick,
     review_tick,
     tick,
     wishlist_item_tick,
@@ -276,6 +277,66 @@ def test_refund_tick_is_a_noop_when_nothing_is_refundable():
 
     assert result is None
     assert len(cur.calls) == 1
+
+
+def test_restatement_tick_reverses_a_historical_revocation(monkeypatch):
+    # #138: a backdated correction. granted_at never enters this function
+    # at all (the update statement doesn't even select it) -- proof that
+    # it's untouched, not just unasserted.
+    grant_id = "grant-1"
+    cur = FakeCursor(fetchone_values=[(grant_id,)])
+
+    result = restatement_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == grant_id
+    select_calls = [c for c in cur.calls if c[0].startswith("select")]
+    assert select_calls == [
+        ("select id from ownership_grants where revoked_at is not null order by random() limit 1", None)
+    ]
+    update_calls = [c for c in cur.calls if c[0].startswith("update")]
+    assert update_calls == [
+        ("update ownership_grants set revoked_at = null, recorded_at = %s where id = %s",
+         (fixed_clock(), grant_id))
+    ]
+
+
+def test_restatement_tick_is_a_noop_when_nothing_is_revoked():
+    cur = FakeCursor(fetchone_values=[None])
+
+    result = restatement_tick(cur, fixed_clock, random.Random(7))
+
+    assert result is None
+    assert len(cur.calls) == 1
+
+
+def test_restatement_is_registered_as_a_rare_event_type():
+    # Weight sourced from dirty.RESTATEMENT_WEIGHT (env-overridable, #130's
+    # convention) and kept rarer than refund -- a correction should fire
+    # less often than the original events it corrects.
+    weights = dict(EVENT_WEIGHTS)
+    assert weights["restatement"] == dirty.RESTATEMENT_WEIGHT
+    assert weights["restatement"] < weights["refund"]
+
+
+def test_tick_dispatches_to_restatement_on_a_seed_landing_there():
+    # pick_event_type's `weights` default is bound to the EVENT_WEIGHTS
+    # list object at def time, so an in-place mutation (not a monkeypatched
+    # reassignment, which a bound default wouldn't see) is what actually
+    # changes tick()'s draw here. Forcing restatement's weight
+    # overwhelmingly high makes a fixed seed deterministically land on it
+    # through the real weighted-choice dispatch -- the same fake-cursor/
+    # forced-roll seam every other tick test uses, not a stubbed
+    # pick_event_type.
+    original_weights = list(generator.EVENT_WEIGHTS)
+    generator.EVENT_WEIGHTS[:] = [("restatement", 1000.0), ("purchase", 1.0)]
+    try:
+        cur = FakeCursor(fetchone_values=[("grant-1",)])
+        event_type = tick(cur, fixed_clock, random.Random(1))
+    finally:
+        generator.EVENT_WEIGHTS[:] = original_weights
+
+    assert event_type == "restatement"
+    assert any(c[0].startswith("update ownership_grants set revoked_at = null") for c in cur.calls)
 
 
 def test_price_change_tick_captures_old_and_new_price_cents():
