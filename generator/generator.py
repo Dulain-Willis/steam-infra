@@ -58,8 +58,9 @@ CHARGEBACK_CHANCE = 0.1
 # Weighted event types: (name, weight). Catalog events (price_change,
 # concurrent_player_snapshot) are rarer than per-user purchases; playtime
 # sessions fire far more often than the ownership events since a real
-# player racks up many sessions per purchase; refund is the rarest event
-# of all.
+# player racks up many sessions per purchase; refund is the rarest of the
+# ownership events (purchase/gift/key_redemption/refund) -- restatement
+# (#138), a correction rather than an ownership event, is rarer still.
 EVENT_WEIGHTS = [
     ("purchase", 5.0),
     ("gift", 2.0),
