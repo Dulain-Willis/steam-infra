@@ -439,16 +439,23 @@ def test_playtime_session_tick_starts_a_session_when_none_is_open():
 
 
 def test_playtime_session_tick_closes_an_open_session():
-    cur = FakeCursor(fetchone_values=[("session-1",)])
+    # ended_at is derived from the row's own started_at (#136 code review
+    # fix), not stamped at clock() -- see
+    # test_playtime_session_tick_close_branch_duration_stays_bounded_after_late_arrival
+    # for why.
+    started_at = fixed_clock() - timedelta(minutes=5)
+    cur = FakeCursor(fetchone_values=[("session-1", started_at)])
     rng = random.Random()
-    rng.random = lambda: 0.0  # force the "close it" branch
+    rng.random = lambda: 0.0  # force the "close it" branch, and pin the duration roll to its floor
 
     result = playtime_session_tick(cur, fixed_clock, rng)
 
     assert result == "session-1"
     sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
     assert "ended_at" in sql
-    assert params == (fixed_clock(), "session-1")
+    ended_at, row_id = params
+    assert row_id == "session-1"
+    assert ended_at == started_at + timedelta(minutes=dirty.PLAYTIME_SESSION_MIN_MINUTES)
     assert not any("insert into playtime_sessions" in c[0] for c in cur.calls)
 
 
@@ -461,8 +468,11 @@ def test_wishlist_item_tick_open_close_pattern():
     assert "added_at" in sql
     assert params == ("user-1", "game-1", fixed_clock())
 
-    # close branch: open item found -> update removed_at
-    cur2 = FakeCursor(fetchone_values=[("item-2",)])
+    # close branch: open item found -> update removed_at. wishlist_items
+    # has no late_arrival, so the close branch still stamps clock() --
+    # the row's added_at is fetched (shared _open_close_tick query shape)
+    # but ignored.
+    cur2 = FakeCursor(fetchone_values=[("item-2", fixed_clock())])
     rng2 = random.Random()
     rng2.random = lambda: 0.0
     result2 = wishlist_item_tick(cur2, fixed_clock, rng2)
@@ -481,8 +491,9 @@ def test_family_share_tick_open_close_pattern():
     assert "started_at" in sql
     assert params == ("user-1", "user-2", fixed_clock())
 
-    # close branch: open share found -> update ended_at
-    cur2 = FakeCursor(fetchone_values=[("share-2",)])
+    # close branch: open share found -> update ended_at. family_shares has
+    # no late_arrival, so the close branch still stamps clock().
+    cur2 = FakeCursor(fetchone_values=[("share-2", fixed_clock())])
     rng2 = random.Random()
     rng2.random = lambda: 0.0
     result2 = family_share_tick(cur2, fixed_clock, rng2)
@@ -640,7 +651,7 @@ def test_review_tick_never_duplicates_even_on_a_forced_roll():
 def test_playtime_session_tick_does_not_duplicate_the_close_branch():
     # close branch also forces rng.random() == 0.0 (would hit duplicate_rate
     # too) — duplication must only ever be rolled on the start branch.
-    cur = FakeCursor(fetchone_values=[("session-1",)])
+    cur = FakeCursor(fetchone_values=[("session-1", fixed_clock())])
 
     playtime_session_tick(cur, fixed_clock, ForcedRoll(0.0))
 
@@ -833,18 +844,30 @@ def test_playtime_session_tick_never_backdates_on_a_miss(monkeypatch):
     assert params[2] == fixed_clock()
 
 
-def test_playtime_session_tick_never_backdates_the_close_branch(monkeypatch):
-    # Even forced to always hit, late arrival must never touch the close
-    # (update) branch -- it only ever backdates a session's start.
-    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
-    cur = FakeCursor(fetchone_values=[("session-1",)])
+def test_playtime_session_tick_close_branch_duration_stays_bounded_after_late_arrival(monkeypatch):
+    # #136 code review fix: a late-arriving session's close branch must not
+    # manufacture a multi-day duration by stamping clock() against a
+    # started_at backdated by up to LATE_ARRIVAL_MAX_DAYS. ended_at is
+    # derived from the row's own started_at instead, so the resulting
+    # duration always stays within dirty's realistic playtime-session
+    # bound, not the (fixed_clock() - backdated started_at) gap.
+    monkeypatch.setattr(dirty, "PLAYTIME_SESSION_MIN_MINUTES", 1)
+    monkeypatch.setattr(dirty, "PLAYTIME_SESSION_MAX_MINUTES", 180)
+    backdated_started_at = fixed_clock() - timedelta(days=7)
+    cur = FakeCursor(fetchone_values=[("session-1", backdated_started_at)])
     rng = random.Random()
-    rng.random = lambda: 0.0  # force the "close it" branch
+    rng.random = lambda: 0.0  # force the "close it" branch, and pin the duration roll to its floor
 
     playtime_session_tick(cur, fixed_clock, rng)
 
     sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
-    assert params == (fixed_clock(), "session-1")
+    ended_at, row_id = params
+    assert row_id == "session-1"
+    duration = ended_at - backdated_started_at
+    assert timedelta(minutes=1) <= duration <= timedelta(minutes=180)
+    # the bug this guards: stamping clock() here would have produced a
+    # ~7-day duration instead.
+    assert duration < timedelta(days=1)
 
 
 def test_wishlist_item_tick_never_backdates_even_on_a_forced_late_roll(monkeypatch):

@@ -101,6 +101,27 @@ def late_arrival_offset(rng):
     return None
 
 
+# A realistic playtime session length (#136 code review fix): the close
+# branch of generator._open_close_tick derives ended_at from this, added to
+# the row's own started_at, instead of stamping clock() -- stamping clock()
+# against a started_at that late_arrival_offset() backdated by up to
+# LATE_ARRIVAL_MAX_DAYS would manufacture a multi-day session instead of
+# just delaying when it arrived. Applies uniformly (not just on a late-
+# arrival hit) so one formula covers both cases -- the ordinary case was
+# already a realistic length, so this doesn't change its character, just
+# its source of truth.
+PLAYTIME_SESSION_MIN_MINUTES = _env_float("PLAYTIME_SESSION_MIN_MINUTES", "1")
+PLAYTIME_SESSION_MAX_MINUTES = _env_float("PLAYTIME_SESSION_MAX_MINUTES", "180")
+
+
+def playtime_session_duration(rng):
+    """A uniform PLAYTIME_SESSION_MIN_MINUTES..PLAYTIME_SESSION_MAX_MINUTES
+    session length, as a timedelta."""
+    return timedelta(
+        minutes=rng.uniform(PLAYTIME_SESSION_MIN_MINUTES, PLAYTIME_SESSION_MAX_MINUTES)
+    )
+
+
 def orphan_flavor(rng):
     """Rolls once against a shared budget for client_events' two orphan
     parent flavours: ORPHAN_NEVER_ARRIVES_RATE (checked first) for a parent

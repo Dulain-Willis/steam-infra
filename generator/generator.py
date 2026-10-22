@@ -360,16 +360,27 @@ def _open_close_tick(cur, clock, rng, table, start_col, end_col, late_arrival=Fa
     start_col by the returned offset while leaving the insert's implicit
     recorded_at default (now()) untouched -- an offline client uploading a
     session days after it actually started.
+
+    On the close branch, late_arrival=True derives end_col from the row's
+    own start_col (dirty.playtime_session_duration) instead of stamping
+    clock() -- clock() against a start_col that may have been backdated
+    by up to dirty.LATE_ARRIVAL_MAX_DAYS would manufacture a multi-day
+    session instead of just delaying when it arrived. Stateless and
+    correct across a generator restart or a close picked up by a
+    different process, unlike stashing the offset in memory would be.
     """
     cur.execute(
-        f"select id from {table} where {end_col} is null order by random() limit 1"
+        f"select id, {start_col} from {table} where {end_col} is null order by random() limit 1"
     )
     open_row = cur.fetchone()
     if open_row and rng.random() < 0.5:
-        row_id = open_row[0]
+        row_id, started_at = open_row
+        end_time = (
+            started_at + dirty.playtime_session_duration(rng) if late_arrival else clock()
+        )
         cur.execute(
             f"update {table} set {end_col} = %s where id = %s",
-            (clock(), row_id),
+            (end_time, row_id),
         )
         return row_id
 
