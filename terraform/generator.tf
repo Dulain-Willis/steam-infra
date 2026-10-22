@@ -75,6 +75,7 @@ resource "aws_instance" "generator" {
     late_arrival_rate                       = var.late_arrival_rate
     late_arrival_max_days                   = var.late_arrival_max_days
     payment_method_new_onset_date           = var.payment_method_new_onset_date
+    restatement_weight                      = var.restatement_weight
   }))
 
   tags = {

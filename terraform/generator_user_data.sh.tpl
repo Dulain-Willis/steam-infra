@@ -46,4 +46,5 @@ docker run -d \
   -e LATE_ARRIVAL_RATE="${late_arrival_rate}" \
   -e LATE_ARRIVAL_MAX_DAYS="${late_arrival_max_days}" \
   -e PAYMENT_METHOD_NEW_ONSET_DATE="${payment_method_new_onset_date}" \
+  -e RESTATEMENT_WEIGHT="${restatement_weight}" \
   steam-generator

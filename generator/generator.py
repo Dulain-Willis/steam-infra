@@ -15,7 +15,11 @@ schema: a "start"/"send" half inserts a row with the close column null,
 and a "close"/"redeem" half — picked probabilistically when an open row
 exists — closes it (and, for gift, only then writes the fan-in
 `ownership_grants` row, since ownership doesn't change hands until
-redemption).
+redemption). `restatement` (#138) corrects a historical `ownership_grants`
+row instead of writing a new event: it reverses a prior revocation,
+bumping `recorded_at` (arrival) while leaving `granted_at` (event time)
+untouched, so the correction is a restatement of an old period rather
+than a new event wearing a disguise.
 """
 
 import json
@@ -54,8 +58,9 @@ CHARGEBACK_CHANCE = 0.1
 # Weighted event types: (name, weight). Catalog events (price_change,
 # concurrent_player_snapshot) are rarer than per-user purchases; playtime
 # sessions fire far more often than the ownership events since a real
-# player racks up many sessions per purchase; refund is the rarest event
-# of all.
+# player racks up many sessions per purchase; refund is the rarest of the
+# ownership events (purchase/gift/key_redemption/refund) -- restatement
+# (#138), a correction rather than an ownership event, is rarer still.
 EVENT_WEIGHTS = [
     ("purchase", 5.0),
     ("gift", 2.0),
@@ -71,6 +76,7 @@ EVENT_WEIGHTS = [
     # effective client_events row rate is a few x this weight. Moderate for
     # now; #16 owns recalibrating combined throughput.
     ("client_events", 3.0),
+    ("restatement", dirty.RESTATEMENT_WEIGHT),
 ]
 
 # The 5 funnel steps, in order (steam-analytics#12). Kept in sync with the
@@ -250,6 +256,31 @@ def refund_tick(cur, clock, rng):
 
     cur.execute("update ownership_grants set revoked_at = %s where id = %s", (refunded_at, grant_id))
     return refund_id
+
+
+def restatement_tick(cur, clock, rng):
+    """Backdated restatement (#138): reverses a historical refund by
+    clearing revoked_at on a random already-revoked ownership_grants row --
+    a late-processed refund correction (a support team reinstating
+    ownership after further review) landing long after the original
+    event. granted_at (the event-time column) is left untouched; only
+    revoked_at and recorded_at (arrival) change, so CDC lands this as a
+    restatement of an old period rather than a new event. No-ops if
+    nothing is currently revoked.
+    """
+    cur.execute(
+        "select id from ownership_grants where revoked_at is not null order by random() limit 1"
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    grant_id = row[0]
+
+    cur.execute(
+        "update ownership_grants set revoked_at = null, recorded_at = %s where id = %s",
+        (clock(), grant_id),
+    )
+    return grant_id
 
 
 def price_change_tick(cur, clock, rng):
@@ -555,6 +586,7 @@ EVENT_HANDLERS = {
     "wishlist_item": wishlist_item_tick,
     "review": review_tick,
     "client_events": client_events_tick,
+    "restatement": restatement_tick,
 }
 
 
