@@ -146,7 +146,11 @@ def test_insert_purchase_never_emits_the_new_payment_method_before_onset_date():
     rng = random.Random(42)
     seen = set()
     for _ in range(200):
-        cur = FakeCursor(fetchone_values=[("purchase-1",)])
+        # Two ids: _insert_purchase writes a second row on a
+        # DUPLICATE_RATE_PURCHASES hit (#133), and these tests are about
+        # the payment method, not duplication, so they must tolerate
+        # either path rather than starving the cursor on a hit.
+        cur = FakeCursor(fetchone_values=[("purchase-1",), ("purchase-1-dup",)])
         _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
         seen.add(_payment_method_from_insert(cur))
 
@@ -160,7 +164,11 @@ def test_insert_purchase_emits_the_new_payment_method_on_and_after_onset_date(mo
     rng = random.Random(42)
     seen = set()
     for _ in range(200):
-        cur = FakeCursor(fetchone_values=[("purchase-1",)])
+        # Two ids: _insert_purchase writes a second row on a
+        # DUPLICATE_RATE_PURCHASES hit (#133), and these tests are about
+        # the payment method, not duplication, so they must tolerate
+        # either path rather than starving the cursor on a hit.
+        cur = FakeCursor(fetchone_values=[("purchase-1",), ("purchase-1-dup",)])
         _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
         seen.add(_payment_method_from_insert(cur))
 
