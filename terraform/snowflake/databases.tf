@@ -55,3 +55,30 @@ resource "snowflake_database" "dev" {
   name    = "STEAM_DEV"
   comment = "developer and CI dbt builds — dbt_<name>_* and ci_pr_<N>_* (managed by terraform/snowflake)"
 }
+
+# The whole pipeline is UTC: db/schema.sql's convention line is "timestamps:
+# timestamptz UTC", Postgres stores timestamptz, and Debezium emits UTC. The
+# Snowflake sink lands those as TIMESTAMP_NTZ holding the UTC wall clock, so
+# a TIMESTAMP_NTZ -> TIMESTAMP_TZ cast in the staging layer attaches whatever
+# the SESSION timezone is. Snowflake's default is America/Los_Angeles, which
+# silently skewed every such cast by the UTC offset.
+#
+# That was not theoretical. On the #129 bring-up it made
+# fct_playtime_sessions.duration_minutes negative (a session running
+# 21:44 -> 21:59 measured as -405 minutes: +15 with a 420-minute offset
+# subtracted) and failed both
+# assert_fct_product_session_length_daily_non_negative and
+# assert_fct_wishlist_items_removed_after_added. It only showed up on the
+# columns where a TIMESTAMP_NTZ value is compared against one the sink typed
+# as TEXT -- a nullable timestamp whose first observed value is null gets
+# schematized as TEXT, and its ISO-8601 'Z' strings parse as genuine UTC --
+# so the two sides of the comparison disagreed by the session offset.
+#
+# Setting the account to UTC makes the cast mean what the data means. It is
+# set here rather than left to each session so a fresh bring-up and every
+# identity (loader, both transformers, CI, developers, ad-hoc queries) agree
+# without anyone having to remember.
+resource "snowflake_account_parameter" "timezone" {
+  key   = "TIMEZONE"
+  value = "UTC"
+}
