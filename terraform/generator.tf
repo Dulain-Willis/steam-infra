@@ -66,6 +66,7 @@ resource "aws_instance" "generator" {
     refund_reason_null_rate                 = var.refund_reason_null_rate
     duplicate_rate_wishlist_items           = var.duplicate_rate_wishlist_items
     duplicate_rate_playtime_sessions        = var.duplicate_rate_playtime_sessions
+    duplicate_rate_purchases                = var.duplicate_rate_purchases
     purchase_recorded_at_jitter_max_seconds = var.purchase_recorded_at_jitter_max_seconds
     review_recorded_at_jitter_max_seconds   = var.review_recorded_at_jitter_max_seconds
     snapshot_recorded_at_jitter_max_seconds = var.snapshot_recorded_at_jitter_max_seconds

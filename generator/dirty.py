@@ -61,6 +61,13 @@ PAYMENT_METHOD_NEW_ONSET_DATE = _env_date(
 DUPLICATE_RATES = {
     "wishlist_items": _env_float("DUPLICATE_RATE_WISHLIST_ITEMS", "0.02"),
     "playtime_sessions": _env_float("DUPLICATE_RATE_PLAYTIME_SESSIONS", "0.01"),
+    # purchases: the double-submitted-charge shape (#133) -- a retried
+    # charge writes a second purchases row with an identical business key
+    # (user/game/amount/purchased_at) but only the first ever gets an
+    # ownership_grants row. reviews/game_prices/key_redemptions are left
+    # out deliberately: each carries a unique constraint (db/schema.sql)
+    # that makes a literal duplicate row physically impossible there.
+    "purchases": _env_float("DUPLICATE_RATE_PURCHASES", "0.02"),
 }
 
 
