@@ -38,6 +38,16 @@ resource "aws_instance" "generator" {
   iam_instance_profile        = aws_iam_instance_profile.generator.name
   associate_public_ip_address = true
 
+  # user_data only ever runs at first boot, so without this an injection-rate
+  # override lands in state and changes nothing about the running generator:
+  # the container keeps the environment it booted with. That silently defeats
+  # the whole point of #130's knobs -- the spec wants a fault "forced to appear
+  # in minutes during verification", and a knob you can only set by tearing the
+  # stack down and bringing it back up is not that. Replacing the instance is
+  # cheap here (the generator is stateless; it rebuilds its image on boot) and
+  # it makes `tofu apply -var <rate>=...` mean what it looks like it means.
+  user_data_replace_on_change = true
+
   # ponytail: builds the image on-box from source inlined into user_data
   # (no registry, no image versioning, full docker build on every boot).
   # Revisit with an ECR image + pull-on-boot if generator code outgrows
