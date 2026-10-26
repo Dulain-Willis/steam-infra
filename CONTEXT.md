@@ -48,6 +48,20 @@ Snowflake database. dbt gets an environment only because Airflow runs it.
   layer**.
 - **prod** — the production Airflow on EKS, building into `STEAM_PROD`.
 
+**Orphan event** — a `client_events` row whose `user_id` does not (yet, or
+ever) exist in `users`. `client_events.user_id` has no foreign key to
+`users` (#140, [ADR
+0003](docs/adr/0003-drop-client-events-user-fk-140.md)) — events and
+accounts model two separate services with separate databases, so that
+integrity can't be database-enforced and is instead warehouse-enforced
+(monitored as an inner-join discrepancy in steam-analytics, not ruled out
+by Postgres). The generator forces two orphan flavours at separate rates:
+the user **never arrives** (its id never appears in `users`), or the user
+**arrives late** (its id appears in `users` after a configurable delay,
+during which the join is wrong before it's right). *Avoid* "orphan" alone
+for this — this project also uses "orphan" for leaked AWS resources in
+teardown; in a `CONTEXT.md`/schema context it always means this.
+
 **Promotion** — moving an already-built image tag from staging to prod.
 The image is never rebuilt between environments. Mechanically: the
 **Promote to prod** workflow opens a PR setting prod's image tag to
@@ -55,5 +69,56 @@ staging's, and merging that PR is both the approval and the deploy
 (README.md, "Promote to prod"). Rollback is the same thing with an older
 tag.
 
+**Schema evolution** — a change to a source table's shape made directly
+against the live database (an `alter table`), outside any coordinated
+release. *Additive* schema evolution (a new nullable column — the only
+kind `scenarios/games_add_column.py` models, #144) needs no coordinated
+release at all: Snowflake's own schema-evolution feature
+(`snowflake.enable.schematization=true`, steam-analytics ADR 0001) picks
+up the new column in the landing table automatically on the connector's
+next change event, and every `stg` model keeps building unchanged
+because it already names its output columns explicitly rather than
+`select *`-ing the landing table. A *breaking* schema evolution (a
+rename, a type change, a drop) is a deliberate follow-up, out of scope
+here — see **contract** below for how steam-analytics catches that case
+instead of silently reshaping a table someone depends on.
+
+**Contract** — a declared, enforced shape (column names and types) on a
+dbt model's output, set via `config: {contract: {enforced: true}}` plus a
+`data_type` on every output column in that model's schema yml
+(steam-analytics). Declared only on *published* mart models (see that
+repo's `CONTEXT.md`) — the layer other teams and BI tools build on. A
+model change that would alter a contracted column's name or type fails
+the build instead of landing silently; an *additive* source-side change
+(see **schema evolution** above) never trips it, because a contract only
+constrains columns a model actually declares, not every column that
+happens to exist upstream.
+
 See `docs/adr/0001-argocd-reverses-iac-boundary-28.md` for why ArgoCD owns
 this layer instead of Terraform or hand-run `kubectl`.
+
+**Request-then-execute sequence** — the documented shape of compliance
+erasure: a deletion *request* is recorded first (`users.deletion_requested_at`
+set, nothing deleted), then — only after a restoration grace period has
+elapsed with no reversal — the *execute* phase runs an actual hard delete
+(#143). This makes the sequence the pipeline has to handle a soft delete
+(the request, an ordinary `UPDATE`) followed later by a hard delete,
+which is the one documented exception to this repo's otherwise-universal
+soft-delete convention (`db/schema.sql:4`, "Revocation/end pattern:
+nullable `*_at` column, never delete rows") rather than a contradiction
+of it. See `scenarios/deletion_request.py` (marks the request) and
+`scenarios/deletion_reversal.py` (reverses it within the grace period).
+
+**Retention tier** — one of the three buckets `scenarios/deletion_execution.py`
+(#143) sorts a user's data into once their deletion request's grace period
+elapses: **hard delete** (behavioural data with no retention duty —
+`client_events`, `playtime_sessions`, `wishlist_items` — rows removed
+outright), **anonymize in place** (the `users` row itself — kept, with
+`username`/`email` overwritten by a tombstone value and `country` cleared,
+so every foreign key into it stays intact), and **retain untouched**
+(`purchases`, `refunds`, `ownership_grants` — left exactly as they are
+under statutory commercial/tax retention, which overrides the erasure
+request). Not a cascade: which tier a table falls into is a fixed,
+per-table decision, not something inherited by following a foreign key
+down from `users`. See
+`docs/adr/0004-three-tier-compliance-erasure-143.md`.

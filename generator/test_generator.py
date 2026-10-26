@@ -1,14 +1,21 @@
 import json
 import random
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
+import dirty
+import generator
 from generator import (
     CLIENT_EVENT_REFERRERS,
     EVENT_HANDLERS,
     EVENT_WEIGHTS,
     FUNNEL_STEPS,
+    PAYMENT_METHOD_NEW,
+    PAYMENT_METHODS,
     REFUND_REASONS,
+    _insert_purchase,
     client_events_tick,
     concurrent_player_snapshot_tick,
     family_share_tick,
@@ -22,6 +29,7 @@ from generator import (
     price_change_tick,
     purchase_tick,
     refund_tick,
+    restatement_tick,
     review_tick,
     tick,
     wishlist_item_tick,
@@ -51,6 +59,16 @@ class FakeCursor:
 
 def fixed_clock():
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _reset_pending_late_users():
+    # generator._pending_late_users is process-local state (#140); clear it
+    # around every test so one test's scheduled late orphan can't leak into
+    # another's assertions.
+    generator._pending_late_users = []
+    yield
+    generator._pending_late_users = []
 
 
 def test_pick_event_type_covers_all_registered_event_types():
@@ -117,6 +135,44 @@ def test_purchase_tick_produces_exactly_one_ownership_grant_for_the_purchase():
 
     purchase_calls = [(sql, params) for sql, params in cur.calls if "insert into purchases" in sql]
     assert len(purchase_calls) == 1
+
+
+def _payment_method_from_insert(cur):
+    sql, params = next(c for c in cur.calls if "insert into purchases" in c[0])
+    return params[4]
+
+
+def test_insert_purchase_never_emits_the_new_payment_method_before_onset_date():
+    rng = random.Random(42)
+    seen = set()
+    for _ in range(200):
+        # Two ids: _insert_purchase writes a second row on a
+        # DUPLICATE_RATE_PURCHASES hit (#133), and these tests are about
+        # the payment method, not duplication, so they must tolerate
+        # either path rather than starving the cursor on a hit.
+        cur = FakeCursor(fetchone_values=[("purchase-1",), ("purchase-1-dup",)])
+        _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
+        seen.add(_payment_method_from_insert(cur))
+
+    assert seen == set(PAYMENT_METHODS)
+    assert PAYMENT_METHOD_NEW not in seen
+
+
+def test_insert_purchase_emits_the_new_payment_method_on_and_after_onset_date(monkeypatch):
+    monkeypatch.setattr(dirty, "PAYMENT_METHOD_NEW_ONSET_DATE", date(2020, 1, 1))
+
+    rng = random.Random(42)
+    seen = set()
+    for _ in range(200):
+        # Two ids: _insert_purchase writes a second row on a
+        # DUPLICATE_RATE_PURCHASES hit (#133), and these tests are about
+        # the payment method, not duplication, so they must tolerate
+        # either path rather than starving the cursor on a hit.
+        cur = FakeCursor(fetchone_values=[("purchase-1",), ("purchase-1-dup",)])
+        _insert_purchase(cur, fixed_clock, rng, "user-1", "game-1")
+        seen.add(_payment_method_from_insert(cur))
+
+    assert seen == set(PAYMENT_METHODS) | {PAYMENT_METHOD_NEW}
 
 
 def test_gift_send_tick_creates_purchase_and_open_gift_row():
@@ -231,6 +287,66 @@ def test_refund_tick_is_a_noop_when_nothing_is_refundable():
     assert len(cur.calls) == 1
 
 
+def test_restatement_tick_reverses_a_historical_revocation(monkeypatch):
+    # #138: a backdated correction. granted_at never enters this function
+    # at all (the update statement doesn't even select it) -- proof that
+    # it's untouched, not just unasserted.
+    grant_id = "grant-1"
+    cur = FakeCursor(fetchone_values=[(grant_id,)])
+
+    result = restatement_tick(cur, fixed_clock, random.Random(7))
+
+    assert result == grant_id
+    select_calls = [c for c in cur.calls if c[0].startswith("select")]
+    assert select_calls == [
+        ("select id from ownership_grants where revoked_at is not null order by random() limit 1", None)
+    ]
+    update_calls = [c for c in cur.calls if c[0].startswith("update")]
+    assert update_calls == [
+        ("update ownership_grants set revoked_at = null, recorded_at = %s where id = %s",
+         (fixed_clock(), grant_id))
+    ]
+
+
+def test_restatement_tick_is_a_noop_when_nothing_is_revoked():
+    cur = FakeCursor(fetchone_values=[None])
+
+    result = restatement_tick(cur, fixed_clock, random.Random(7))
+
+    assert result is None
+    assert len(cur.calls) == 1
+
+
+def test_restatement_is_registered_as_a_rare_event_type():
+    # Weight sourced from dirty.RESTATEMENT_WEIGHT (env-overridable, #130's
+    # convention) and kept rarer than refund -- a correction should fire
+    # less often than the original events it corrects.
+    weights = dict(EVENT_WEIGHTS)
+    assert weights["restatement"] == dirty.RESTATEMENT_WEIGHT
+    assert weights["restatement"] < weights["refund"]
+
+
+def test_tick_dispatches_to_restatement_on_a_seed_landing_there():
+    # pick_event_type's `weights` default is bound to the EVENT_WEIGHTS
+    # list object at def time, so an in-place mutation (not a monkeypatched
+    # reassignment, which a bound default wouldn't see) is what actually
+    # changes tick()'s draw here. Forcing restatement's weight
+    # overwhelmingly high makes a fixed seed deterministically land on it
+    # through the real weighted-choice dispatch -- the same fake-cursor/
+    # forced-roll seam every other tick test uses, not a stubbed
+    # pick_event_type.
+    original_weights = list(generator.EVENT_WEIGHTS)
+    generator.EVENT_WEIGHTS[:] = [("restatement", 1000.0), ("purchase", 1.0)]
+    try:
+        cur = FakeCursor(fetchone_values=[("grant-1",)])
+        event_type = tick(cur, fixed_clock, random.Random(1))
+    finally:
+        generator.EVENT_WEIGHTS[:] = original_weights
+
+    assert event_type == "restatement"
+    assert any(c[0].startswith("update ownership_grants set revoked_at = null") for c in cur.calls)
+
+
 def test_price_change_tick_captures_old_and_new_price_cents():
     price_id = "price-1"
     game_id = "game-1"
@@ -318,6 +434,19 @@ def test_tick_dispatches_to_the_selected_event_type():
     assert any("insert into purchases" in c[0] for c in cur.calls)
 
 
+def test_playtime_session_tick_excludes_erased_users_from_the_start_branch():
+    # steam-infra#129 integration review, finding 5: an anonymized user
+    # row is still a live FK target, so the start branch's user pick must
+    # exclude deletion_executed_at is not null rows or the generator keeps
+    # writing fresh behavioural rows for an erased user.
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, random.Random(0))
+
+    user_select = next(c for c in cur.calls if "from users" in c[0])
+    assert "deletion_executed_at is null" in user_select[0]
+
+
 def test_playtime_session_tick_starts_a_session_when_none_is_open():
     cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
 
@@ -331,16 +460,23 @@ def test_playtime_session_tick_starts_a_session_when_none_is_open():
 
 
 def test_playtime_session_tick_closes_an_open_session():
-    cur = FakeCursor(fetchone_values=[("session-1",)])
+    # ended_at is derived from the row's own started_at (#136 code review
+    # fix), not stamped at clock() -- see
+    # test_playtime_session_tick_close_branch_duration_stays_bounded_after_late_arrival
+    # for why.
+    started_at = fixed_clock() - timedelta(minutes=5)
+    cur = FakeCursor(fetchone_values=[("session-1", started_at)])
     rng = random.Random()
-    rng.random = lambda: 0.0  # force the "close it" branch
+    rng.random = lambda: 0.0  # force the "close it" branch, and pin the duration roll to its floor
 
     result = playtime_session_tick(cur, fixed_clock, rng)
 
     assert result == "session-1"
     sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
     assert "ended_at" in sql
-    assert params == (fixed_clock(), "session-1")
+    ended_at, row_id = params
+    assert row_id == "session-1"
+    assert ended_at == started_at + timedelta(minutes=dirty.PLAYTIME_SESSION_MIN_MINUTES)
     assert not any("insert into playtime_sessions" in c[0] for c in cur.calls)
 
 
@@ -353,8 +489,11 @@ def test_wishlist_item_tick_open_close_pattern():
     assert "added_at" in sql
     assert params == ("user-1", "game-1", fixed_clock())
 
-    # close branch: open item found -> update removed_at
-    cur2 = FakeCursor(fetchone_values=[("item-2",)])
+    # close branch: open item found -> update removed_at. wishlist_items
+    # has no late_arrival, so the close branch still stamps clock() --
+    # the row's added_at is fetched (shared _open_close_tick query shape)
+    # but ignored.
+    cur2 = FakeCursor(fetchone_values=[("item-2", fixed_clock())])
     rng2 = random.Random()
     rng2.random = lambda: 0.0
     result2 = wishlist_item_tick(cur2, fixed_clock, rng2)
@@ -373,8 +512,9 @@ def test_family_share_tick_open_close_pattern():
     assert "started_at" in sql
     assert params == ("user-1", "user-2", fixed_clock())
 
-    # close branch: open share found -> update ended_at
-    cur2 = FakeCursor(fetchone_values=[("share-2",)])
+    # close branch: open share found -> update ended_at. family_shares has
+    # no late_arrival, so the close branch still stamps clock().
+    cur2 = FakeCursor(fetchone_values=[("share-2", fixed_clock())])
     rng2 = random.Random()
     rng2.random = lambda: 0.0
     result2 = family_share_tick(cur2, fixed_clock, rng2)
@@ -497,10 +637,32 @@ def test_playtime_session_tick_duplicates_the_start_on_a_forced_roll():
     assert insert_calls[0][1] == insert_calls[1][1]
 
 
-def test_purchase_tick_never_duplicates_even_on_a_forced_roll():
+def test_purchase_tick_duplicates_the_purchase_on_a_forced_roll():
+    cur = FakeCursor(
+        fetchone_values=[("user-1",), ("game-1",), ("purchase-1",), ("purchase-1",)]
+    )
+
+    result = purchase_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    assert result == "purchase-1"
+    insert_calls = [c for c in cur.calls if "insert into purchases" in c[0]]
+    assert len(insert_calls) == 2
+    # distinct primary keys (per-row, generated by the DB -- not asserted
+    # here), identical business key: the duplicate is a literal copy of
+    # the same insert params.
+    assert insert_calls[0][1] == insert_calls[1][1]
+
+    # exactly one ownership grant, pointing at the first (and only
+    # returned) purchase id -- revenue double-counts, ownership doesn't.
+    grant_calls = [c for c in cur.calls if "ownership_grants" in c[0]]
+    assert len(grant_calls) == 1
+    assert grant_calls[0][1][2] == "purchase-1"
+
+
+def test_purchase_tick_does_not_duplicate_on_a_missed_roll():
     cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("purchase-1",)])
 
-    purchase_tick(cur, fixed_clock, ForcedRoll(0.0))
+    purchase_tick(cur, fixed_clock, ForcedRoll(0.99))
 
     assert len([c for c in cur.calls if "insert into purchases" in c[0]]) == 1
 
@@ -532,7 +694,7 @@ def test_review_tick_never_duplicates_even_on_a_forced_roll():
 def test_playtime_session_tick_does_not_duplicate_the_close_branch():
     # close branch also forces rng.random() == 0.0 (would hit duplicate_rate
     # too) — duplication must only ever be rolled on the start branch.
-    cur = FakeCursor(fetchone_values=[("session-1",)])
+    cur = FakeCursor(fetchone_values=[("session-1", fixed_clock())])
 
     playtime_session_tick(cur, fixed_clock, ForcedRoll(0.0))
 
@@ -573,7 +735,26 @@ def test_funnel_session_produces_monotonic_drop_off():
     assert counts[-1] < counts[0] // 2         # but far fewer than start it
 
 
-def test_client_events_tick_writes_one_ordered_row_per_funnel_step():
+def test_client_events_tick_excludes_erased_users_from_the_user_pick(monkeypatch):
+    # steam-infra#129 integration review, finding 5: same guard as
+    # playtime_session_tick's start branch -- an erased user's row is
+    # anonymized, not gone, so the pick must filter it out explicitly.
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    user_select = next(c for c in cur.calls if "from users" in c[0])
+    assert "deletion_executed_at is null" in user_select[0]
+
+
+def test_client_events_tick_writes_one_ordered_row_per_funnel_step(monkeypatch):
+    # This test's concern is funnel/campaign behavior, not orphans -- pin
+    # both orphan rates to 0 so ForcedRoll(0.0)'s all-hits forcing doesn't
+    # also roll an orphan (see the dedicated orphan tests below).
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
     cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
 
     session_id = client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
@@ -609,7 +790,9 @@ def test_client_events_tick_omits_campaign_id_when_roll_misses():
     assert props["campaign_id"] is None
 
 
-def test_client_events_tick_handles_no_campaigns_seeded():
+def test_client_events_tick_handles_no_campaigns_seeded(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
     cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), None])
 
     client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
@@ -617,3 +800,188 @@ def test_client_events_tick_handles_no_campaigns_seeded():
     inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
     props = json.loads(inserts[0][5])
     assert props["campaign_id"] is None
+
+
+def test_client_events_tick_emits_a_never_arriving_orphan_on_a_forced_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    user_ids = {p[1] for p in inserts}
+    assert user_ids != {"user-1"}          # the seeded user was swapped out for an orphan id
+    assert len(user_ids) == 1              # every row in the session shares the one orphan id
+    assert not any("insert into users" in sql for sql, _ in cur.calls)
+    assert generator._pending_late_users == []   # "never" schedules nothing
+
+
+def test_client_events_tick_emits_a_late_arriving_orphan_on_a_forced_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_DELAY_SECONDS", 90)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, ForcedRoll(0.0))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    user_ids = {p[1] for p in inserts}
+    assert user_ids != {"user-1"}
+    assert not any("insert into users" in sql for sql, _ in cur.calls)   # not yet -- it's scheduled
+
+    [(orphan_user_id, due_at)] = generator._pending_late_users
+    assert orphan_user_id in user_ids
+    assert due_at == fixed_clock() + timedelta(seconds=90)
+
+
+def test_emit_due_late_users_is_a_noop_before_the_delay_elapses():
+    cur = FakeCursor()
+    generator._pending_late_users = [("orphan-1", fixed_clock() + timedelta(seconds=90))]
+
+    generator._emit_due_late_users(cur, fixed_clock())
+
+    assert cur.calls == []
+    assert generator._pending_late_users == [("orphan-1", fixed_clock() + timedelta(seconds=90))]
+
+
+def test_emit_due_late_users_inserts_the_parent_once_due_and_drains_it():
+    cur = FakeCursor()
+    due_at = fixed_clock() + timedelta(seconds=90)
+    generator._pending_late_users = [("orphan-1", due_at)]
+
+    generator._emit_due_late_users(cur, due_at)
+
+    inserts = [p for sql, p in cur.calls if "insert into users" in sql]
+    assert len(inserts) == 1
+    assert inserts[0][0] == "orphan-1"
+    assert generator._pending_late_users == []   # drained, not re-inserted on a later tick
+
+
+def test_tick_flushes_due_late_users_before_dispatching():
+    due_at = fixed_clock()
+    generator._pending_late_users = [("orphan-1", due_at)]
+    cur = FakeCursor(fetchone_values=[("u",), ("g",), ("p",)])
+
+    tick(cur, fixed_clock, random.Random(1))   # seed 1 lands on "purchase"
+
+    assert any("insert into users" in sql for sql, _ in cur.calls)
+    assert generator._pending_late_users == []
+
+
+# -- #136: late-arriving events ---------------------------------------------
+
+
+def test_playtime_session_tick_backdates_started_at_on_a_forced_late_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_MAX_DAYS", 7)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+    # should_duplicate's roll follows the late-arrival roll; pin its rate to
+    # 0 so this test stays about late arrival, not duplication.
+    monkeypatch.setitem(dirty.DUPLICATE_RATES, "playtime_sessions", 0.0)
+
+    playtime_session_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into playtime_sessions" in c[0])
+    started_at = params[2]
+    # backdated: strictly before clock(), but never beyond the tail bound
+    assert started_at < fixed_clock()
+    assert fixed_clock() - started_at <= timedelta(days=7)
+    # recorded_at is never named in the insert -- it's left at its database
+    # default (now()), the real insert time, untouched by the backdating.
+    assert "recorded_at" not in sql
+
+
+def test_playtime_session_tick_never_backdates_on_a_miss(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("session-1",)])
+
+    playtime_session_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into playtime_sessions" in c[0])
+    assert params[2] == fixed_clock()
+
+
+def test_playtime_session_tick_close_branch_duration_stays_bounded_after_late_arrival(monkeypatch):
+    # #136 code review fix: a late-arriving session's close branch must not
+    # manufacture a multi-day duration by stamping clock() against a
+    # started_at backdated by up to LATE_ARRIVAL_MAX_DAYS. ended_at is
+    # derived from the row's own started_at instead, so the resulting
+    # duration always stays within dirty's realistic playtime-session
+    # bound, not the (fixed_clock() - backdated started_at) gap.
+    monkeypatch.setattr(dirty, "PLAYTIME_SESSION_MIN_MINUTES", 1)
+    monkeypatch.setattr(dirty, "PLAYTIME_SESSION_MAX_MINUTES", 180)
+    backdated_started_at = fixed_clock() - timedelta(days=7)
+    cur = FakeCursor(fetchone_values=[("session-1", backdated_started_at)])
+    rng = random.Random()
+    rng.random = lambda: 0.0  # force the "close it" branch, and pin the duration roll to its floor
+
+    playtime_session_tick(cur, fixed_clock, rng)
+
+    sql, params = next(c for c in cur.calls if "update playtime_sessions" in c[0])
+    ended_at, row_id = params
+    assert row_id == "session-1"
+    duration = ended_at - backdated_started_at
+    assert timedelta(minutes=1) <= duration <= timedelta(minutes=180)
+    # the bug this guards: stamping clock() here would have produced a
+    # ~7-day duration instead.
+    assert duration < timedelta(days=1)
+
+
+def test_wishlist_item_tick_never_backdates_even_on_a_forced_late_roll(monkeypatch):
+    # late arrival is wired only through playtime_session_tick's
+    # late_arrival=True -- wishlist_items has no physically plausible
+    # offline client and must stay on clock() unconditionally.
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[None, ("user-1",), ("game-1",), ("item-1",)])
+
+    wishlist_item_tick(cur, fixed_clock, random.Random(0))
+
+    sql, params = next(c for c in cur.calls if "insert into wishlist_items" in c[0])
+    assert params == ("user-1", "game-1", fixed_clock())
+
+
+def test_client_events_tick_backdates_occurred_at_on_a_forced_late_roll(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_MAX_DAYS", 7)
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, random.Random(7))
+
+    inserts = [(sql, p) for sql, p in cur.calls if "insert into client_events" in sql]
+    assert inserts   # the funnel always emits at least store_page_view
+    for sql, params in inserts:
+        occurred_at = params[0]
+        assert occurred_at < fixed_clock()
+        assert fixed_clock() - occurred_at <= timedelta(days=7)
+        assert "recorded_at" not in sql   # arrival timestamp stays at its db default
+
+
+def test_client_events_tick_never_backdates_on_a_miss(monkeypatch):
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_NEVER_ARRIVES_RATE", 0.0)
+    monkeypatch.setattr(dirty, "ORPHAN_LATE_ARRIVAL_RATE", 0.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("campaign-1",)])
+
+    client_events_tick(cur, fixed_clock, random.Random(7))
+
+    inserts = [p for sql, p in cur.calls if "insert into client_events" in sql]
+    assert inserts[0][0] == fixed_clock()
+
+
+def test_late_arrival_does_not_touch_the_existing_jitter_mechanism(monkeypatch):
+    # AC: "the existing jitter mechanism is untouched." purchase/review/
+    # snapshot still go through dirty.jittered() alone, never
+    # dirty.late_arrival_offset() -- forcing late arrival to always hit must
+    # not change a purchase_tick insert at all.
+    monkeypatch.setattr(dirty, "LATE_ARRIVAL_RATE", 1.0)
+    cur = FakeCursor(fetchone_values=[("user-1",), ("game-1",), ("purchase-1",)])
+
+    purchase_tick(cur, fixed_clock, random.Random(7))
+
+    sql, params = next(c for c in cur.calls if "insert into purchases" in c[0])
+    purchased_at, recorded_at = params[5], params[6]
+    assert purchased_at == fixed_clock()
+    assert recorded_at >= purchased_at
+    assert recorded_at - purchased_at <= timedelta(seconds=dirty.PURCHASE_RECORDED_AT_JITTER_MAX_SECONDS)
